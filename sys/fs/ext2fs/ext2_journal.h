@@ -29,9 +29,19 @@
 #define _FS_EXT2FS_EXT2_JOURNAL_H_
 
 #include <sys/types.h>
-#include <stdint.h>
+#include <sys/endian.h>
 
-#define	JOURNAL_MAGIC 0xc03b3998
+#if	BYTE_ORDER == BIG_ENDIAN
+#define	EXT2_JBSWAP16(x) (x)
+#define	EXT2_JBSWAP32(x) (x)
+#define	EXT2_JBSWAP64(x) (x)
+#else
+#define	EXT2_JBSWAP16(x) bswap16(x)
+#define	EXT2_JBSWAP32(x) bswap32(x)
+#define	EXT2_JBSWAP64(x) bswap16(x)
+#endif
+
+#define	EXT2_JOURNAL_MAGIC 0xc03b3998
 
 /*
  * Journal block types
@@ -58,9 +68,9 @@ enum journal_checksum_type {
  * Every block in the journal starts with this header
  */
 struct ext2fs_journal_block_header {
-	uint32_t jh_magic;		/* journal magic number */
-	uint32_t jh_blocktype;		/* type of block */
-	uint32_t jh_sequence_num;	/* sequence number */
+	uint32_t jbh_magic;		/* journal magic number */
+	uint32_t jbh_blocktype;		/* type of block */
+	uint32_t jbh_sequence_num;	/* sequence number */
 };
 
 /*
@@ -85,25 +95,8 @@ struct ext2fs_journal_sb {
 	uint32_t jsb_checksum_type;	/* checksum algorithm */
 	uint8_t  jsb_padding2[3];
 	uint32_t jsb_num_fc_blocks;	/* # of fast commit blocks in journal */
-	uint32_t jsb_head;		/* block # of the head */
-	uint8_t  jsb_padding1[40];
-	uint32_t jsb_checksum;
-	uint8_t  jsb_user_ids[16 * 48];	/* filesystem identifiers */
 };
 
-/*
- * Each block in a transaction is described by a tag in the descriptor block
- */
-struct ext2fs_journal_block_tag {
-	uint32_t jdt_blockno;		/* block # in the main filesystem */
-	uint16_t jdt_checksum;		/* checksum for block data integrity */
-	uint16_t jdt_flags;		/* tag flags */
-	uint32_t jdt_blockno_high;	/* high 32-bits of block # */
-};
-
-/*
- * Used at the end of a descriptor block for integrity checking
- */
 struct ext2fs_journal_block_tail {
 	uint32_t jbt_checksum;
 };
@@ -136,6 +129,28 @@ struct ext2fs_journal_commit_header {
 	uint32_t jch_checksum[JOURNAL_COMMIT_CHECKSUM_SIZE];
 	uint64_t jch_timestamp_sec;	/* commit time in secs */
 	uint32_t jch_timestamp_nsec;	/* commit time in nanosecs */
+};
+
+struct vnode;
+struct m_ext2fs;
+// TODO
+struct ext2fs_journal_transaction;
+
+struct ext2fs_journal {
+	struct vnode *jrn_vp;
+	struct m_ext2fs *jrn_fs;
+	struct ext2fs_journal_sb *jrn_sb;
+	struct ext2fs_journal_transaction *jrn_active_trans;
+	struct ext2fs_journal_transaction *jrn_committing_trans;
+
+	uint32_t     jrn_flags;
+	size_t       jrn_blocksize;
+	blkcnt_t     jrn_max_blocks;
+	blkcnt_t     jrn_free_blocks;
+	e4fs_daddr_t jrn_first;
+	e4fs_daddr_t jrn_last;
+	e4fs_daddr_t jrn_log_start;
+	e4fs_daddr_t jrn_log_end;
 };
 
 #endif	/* !_FS_EXT2FS_EXT2_JOURNAL_H_ */
