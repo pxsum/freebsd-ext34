@@ -31,6 +31,8 @@
 #include <sys/types.h>
 
 #define	EXT2_JOURNAL_MAGIC 0xc03b3998
+#define	EXT2_JOURNAL_MIN_BLOCK 1024
+
 
 /*
  * The following structures represent the on-disk journal format.
@@ -129,6 +131,11 @@ struct ext2fs_journal_commit_header {
  * When loaded into memory, journal structures are converted to
  * host native byte order.
  */
+
+enum ext2_journal_state {
+	EXT2_JOURNAL_CLEAN,
+	EXT2_JOURNAL_NEEDS_RECOVERY
+};
 
 struct vnode;
 struct m_ext2fs;

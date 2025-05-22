@@ -173,17 +173,39 @@ ext2_journal_open_inode(struct mount *mp, struct vnode **vpp,
 static int
 ext2_journal_init(struct ext2fs_journal *jrnp)
 {
-	return 0;
+	// Initialize journal parameters
+	jrnp->jrn_blocksize = jrnp->jrn_sb->jsb_blocksize;
+	jrnp->jrn_max_blocks = jrnp->jrn_sb->jsb_max_blocks;
+	jrnp->jrn_first = jrnp->jrn_sb->jsb_first_block;
+	jrnp->jrn_last = jrnp->jrn_first + jrnp->jrn_max_blocks - 1;
+
+	// TODO check feature compatibility
+
+	if (jrnp->jrn_max_blocks < EXT2_JOURNAL_MIN_BLOCK)
+		return (EINVAL);
+
+	// TODO check journal state, replay log or not
+
+	return (0);
 }
 
-// TODO
 static int
 ext2_journal_close(struct ext2fs_journal *jrnp)
 {
-	return 0;
+	if (jrnp == NULL)
+		return (0);
+
+	if (jrnp->jrn_vp != NULL)
+		vput(jrnp->jrn_vp);
+
+	if (jrnp->jrn_sb != NULL)
+		free(jrnp->jrn_sb, M_EXT2JSB);
+
+	free(jrnp, M_EXT2JOURNAL);
+	return (0);
 }
 
-static int
+int
 ext2_journal_open(struct mount *mp, struct ext2fs_journal **jrnpp)
 {
 	int error;
@@ -202,9 +224,10 @@ ext2_journal_open(struct mount *mp, struct ext2fs_journal **jrnpp)
 	}
 
 	(*jrnpp)->jrn_fs = fs;
-	error = ext2_journal_init(*jrnpp); // TODO
+	error = ext2_journal_init(*jrnpp);
 	if (error != 0) {
-		ext2_journal_close(*jrnpp); // TODO
+		ext2_journal_close(*jrnpp);
+		*jrnpp = NULL;
 		return (error);
 	}
 
