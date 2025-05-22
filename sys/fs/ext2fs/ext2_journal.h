@@ -29,19 +29,13 @@
 #define _FS_EXT2FS_EXT2_JOURNAL_H_
 
 #include <sys/types.h>
-#include <sys/endian.h>
-
-#if	BYTE_ORDER == BIG_ENDIAN
-#define	EXT2_JBSWAP16(x) (x)
-#define	EXT2_JBSWAP32(x) (x)
-#define	EXT2_JBSWAP64(x) (x)
-#else
-#define	EXT2_JBSWAP16(x) bswap16(x)
-#define	EXT2_JBSWAP32(x) bswap32(x)
-#define	EXT2_JBSWAP64(x) bswap16(x)
-#endif
 
 #define	EXT2_JOURNAL_MAGIC 0xc03b3998
+
+/*
+ * The following structures represent the on-disk journal format.
+ * All fields are stored in big-endian byte order on disk.
+ */
 
 /*
  * Journal block types
@@ -130,6 +124,11 @@ struct ext2fs_journal_commit_header {
 	uint64_t jch_timestamp_sec;	/* commit time in secs */
 	uint32_t jch_timestamp_nsec;	/* commit time in nanosecs */
 };
+
+/*
+ * When loaded into memory, journal structures are converted to
+ * host native byte order.
+ */
 
 struct vnode;
 struct m_ext2fs;
