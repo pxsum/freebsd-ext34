@@ -29,6 +29,7 @@
 #define _FS_EXT2FS_EXT2_JOURNAL_H_
 
 #include <sys/types.h>
+#include <fs/ext2fs/inode.h>
 
 #define	EXT2_JOURNAL_MAGIC 0xc03b3998
 #define	EXT2_JOURNAL_MIN_BLOCK 1024

@@ -27,28 +27,23 @@
 
 #include <sys/param.h>
 #include <sys/systm.h>
-#include <sys/namei.h>
-#include <sys/priv.h>
-#include <sys/proc.h>
-#include <sys/kernel.h>
-#include <sys/vnode.h>
-#include <sys/mount.h>
 #include <sys/bio.h>
 #include <sys/buf.h>
-#include <sys/conf.h>
 #include <sys/endian.h>
 #include <sys/fcntl.h>
+#include <sys/kernel.h>
 #include <sys/malloc.h>
+#include <sys/mount.h>
 #include <sys/sdt.h>
 #include <sys/stat.h>
-#include <sys/mutex.h>
+#include <sys/vnode.h>
 
-#include <fs/ext2fs/fs.h>
-#include <fs/ext2fs/ext2fs.h>
-#include <fs/ext2fs/ext2_mount.h>
-#include <fs/ext2fs/inode.h>
-#include <fs/ext2fs/ext2_journal.h>
 #include <fs/ext2fs/ext2_dinode.h>
+#include <fs/ext2fs/ext2_journal.h>
+#include <fs/ext2fs/ext2_mount.h>
+#include <fs/ext2fs/ext2fs.h>
+#include <fs/ext2fs/fs.h>
+#include <fs/ext2fs/inode.h>
 
 MALLOC_DECLARE(M_EXT2JOURNAL);
 MALLOC_DEFINE(M_EXT2JOURNAL, "ext2fs_journal", "In-memory ext2 journal");
@@ -205,7 +200,7 @@ ext2_journal_close(struct ext2fs_journal *jrnp)
 	return (0);
 }
 
-int
+int static
 ext2_journal_open(struct mount *mp, struct ext2fs_journal **jrnpp)
 {
 	int error;
