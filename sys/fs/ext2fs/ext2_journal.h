@@ -32,7 +32,7 @@
 #include <fs/ext2fs/inode.h>
 
 #define	EXT2_JOURNAL_MAGIC 0xc03b3998
-#define	EXT2_JOURNAL_MIN_BLOCK 1024
+#define	EXT2_JOURNAL_MIN_BLOCKS 1024
 
 
 /*
@@ -159,5 +159,9 @@ struct ext2fs_journal {
 	e4fs_daddr_t jrn_log_start;
 	e4fs_daddr_t jrn_log_end;
 };
+
+
+int ext2_journal_open(struct mount *mp, struct ext2fs_journal **jrnpp);
+int ext2_journal_close(struct ext2fs_journal *jrnp);
 
 #endif	/* !_FS_EXT2FS_EXT2_JOURNAL_H_ */

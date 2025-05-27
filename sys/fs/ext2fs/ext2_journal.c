@@ -45,11 +45,7 @@
 #include <fs/ext2fs/fs.h>
 #include <fs/ext2fs/inode.h>
 
-MALLOC_DECLARE(M_EXT2JOURNAL);
 MALLOC_DEFINE(M_EXT2JOURNAL, "ext2fs_journal", "In-memory ext2 journal");
-
-
-MALLOC_DECLARE(M_EXT2JSB);
 MALLOC_DEFINE(M_EXT2JSB, "ext2fs_journal_sb", "In-memory copy of \
 	journal superblock");
 
@@ -121,26 +117,39 @@ ext2_journal_open_inode(struct mount *mp, struct vnode **vpp,
 	struct ext2mount *ump = VFSTOEXT2(mp);
 	struct m_ext2fs *fs = ump->um_e2fs;
 	struct ext2fs_journal_sb *jrn_sbp;
+	int error;
 
-	// not sure what flag to pass in
-	int result = VFS_VGET(mp, EXT2_JOURNALINO, 0, vpp);
-	if (result != 0) {
-		*vpp = NULL;
-		return result;
+
+	/* Check if journal inode number is valid */
+	if (fs->e2fs->e3fs_journal_inum == 0 ||
+	    fs->e2fs->e3fs_journal_inum != EXT2_JOURNALINO) {
+		printf("ext2fs: invalid journal inode number: %u\n",
+		    fs->e2fs->e3fs_journal_inum);
+		return (EINVAL);
 	}
-	result = bread(*vpp, 0, (int) fs->e2fs_bsize, NOCRED, &jrn_buf);
-	if (result != 0) {
+
+	/* FIXME vfs_vget returns with invalid argument error. */
+	error = VFS_VGET(mp, EXT2_JOURNALINO, LK_EXCLUSIVE, vpp);
+	if (error != 0) {
+		*vpp = NULL;
+		printf("ext2fs: vfs_get failed: %d\n", error);
+		return (error);
+	}
+	error = bread(*vpp, 0, (int) fs->e2fs_bsize, NOCRED, &jrn_buf);
+	if (error != 0) {
+		printf("ext2fs: bread failed: %d\n", error);
 		vput(*vpp);
 		*vpp = NULL;
-		return result;
+		return (error);
 	}
 
 	jrn_data = jrn_buf->b_data;
 	if (!ext2_verify_journal_block(jrn_data)) {
+		printf("ext2fs: journal magic number mismatch\n");
 		brelse(jrn_buf);
 		vput(*vpp);
 		*vpp = NULL;
-		return EINVAL;
+		return (EINVAL);
 	}
 
 	jrn_sbp = (struct ext2fs_journal_sb *) jrn_data;
@@ -149,10 +158,11 @@ ext2_journal_open_inode(struct mount *mp, struct vnode **vpp,
 	    be32toh(jrn_sbp->jsb_header.jbh_blocktype) !=
 	    EXT2_JOURNAL_FORMAT_EXTENDED)
 	    {
+		    printf("ext2fs: journal is not the proper version\n");
 		    brelse(jrn_buf);
 		    vput(*vpp);
 		    *vpp = NULL;
-		    return EINVAL;
+		    return (EINVAL);
 	    }
 
 	*jrn_sbpp = (struct ext2fs_journal_sb *)
@@ -164,7 +174,6 @@ ext2_journal_open_inode(struct mount *mp, struct vnode **vpp,
 	return (0);
 }
 
-// TODO
 static int
 ext2_journal_init(struct ext2fs_journal *jrnp)
 {
@@ -174,17 +183,21 @@ ext2_journal_init(struct ext2fs_journal *jrnp)
 	jrnp->jrn_first = jrnp->jrn_sb->jsb_first_block;
 	jrnp->jrn_last = jrnp->jrn_first + jrnp->jrn_max_blocks - 1;
 
-	// TODO check feature compatibility
-
-	if (jrnp->jrn_max_blocks < EXT2_JOURNAL_MIN_BLOCK)
+	if (jrnp->jrn_max_blocks < EXT2_JOURNAL_MIN_BLOCKS) {
+		printf("ext2fs: journal number of blocks too little\n");
 		return (EINVAL);
+	}
 
-	// TODO check journal state, replay log or not
+	if (le16toh(jrnp->jrn_fs->e2fs->e2fs_state) & E2FS_ISCLEAN) {
+		jrnp->jrn_flags |= EXT2_JOURNAL_CLEAN;
+	} else {
+		jrnp->jrn_flags |= EXT2_JOURNAL_NEEDS_RECOVERY;
+	}
 
 	return (0);
 }
 
-static int
+int
 ext2_journal_close(struct ext2fs_journal *jrnp)
 {
 	if (jrnp == NULL)
@@ -200,7 +213,7 @@ ext2_journal_close(struct ext2fs_journal *jrnp)
 	return (0);
 }
 
-int static
+int
 ext2_journal_open(struct mount *mp, struct ext2fs_journal **jrnpp)
 {
 	int error;
@@ -213,7 +226,8 @@ ext2_journal_open(struct mount *mp, struct ext2fs_journal **jrnpp)
 	error = ext2_journal_open_inode(mp, &((*jrnpp)->jrn_vp),
                               &((*jrnpp)->jrn_sb));
 	if (error != 0) {
-		free(*jrnpp, M_EXT2JOURNAL);
+		printf("ext2fs: failed to open journal inode. error: %d\n", error);
+		ext2_journal_close(*jrnpp);
 		*jrnpp = NULL;
 		return (error);
 	}
@@ -221,10 +235,11 @@ ext2_journal_open(struct mount *mp, struct ext2fs_journal **jrnpp)
 	(*jrnpp)->jrn_fs = fs;
 	error = ext2_journal_init(*jrnpp);
 	if (error != 0) {
+		printf("ext2fs: failed initialize journal. error: %d\n", error);
 		ext2_journal_close(*jrnpp);
 		*jrnpp = NULL;
 		return (error);
 	}
-
+	ump->um_journal = *jrnpp;
 	return (0);
 }

@@ -320,7 +320,8 @@ static const struct ext2_feature incompat[] = {
  * - EXT2F_INCOMPAT_EXTENTS
  *
  */
-#define	EXT2F_COMPAT_SUPP		EXT2F_COMPAT_DIRHASHINDEX
+#define	EXT2F_COMPAT_SUPP		(EXT2F_COMPAT_DIRHASHINDEX | \
+					 EXT2F_COMPAT_HASJOURNAL)
 #define	EXT2F_ROCOMPAT_SUPP		(EXT2F_ROCOMPAT_SPARSESUPER | \
 					 EXT2F_ROCOMPAT_LARGEFILE | \
 					 EXT2F_ROCOMPAT_GDT_CSUM | \
@@ -355,6 +356,15 @@ static const struct ext2_feature incompat[] = {
  */
 #define	E2FS_ISCLEAN			0x0001	/* Unmounted cleanly */
 #define	E2FS_ERRORS			0x0002	/* Errors detected */
+
+
+/*
+ * Superblock default mount options
+ */
+#define E2FS_JMODE_DATA			0x0020	/* Data journaling */
+#define E2FS_JMODE_ORDERED		0x0040	/* Ordered journaling */
+#define E2FS_JMODE_WBACK		0x0060	/* Writeback journaling */
+#define E2FS_JMODE_MASK			0x0060	/* Has one of the jmodes set */
 
 /*
  * Filesystem miscellaneous flags

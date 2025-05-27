@@ -64,6 +64,7 @@
 #include <fs/ext2fs/ext2_dinode.h>
 #include <fs/ext2fs/ext2_extern.h>
 #include <fs/ext2fs/ext2_extents.h>
+#include <fs/ext2fs/ext2_journal.h>
 
 SDT_PROVIDER_DECLARE(ext2fs);
 /*
@@ -835,6 +836,7 @@ ext2_mountfs(struct vnode *devvp, struct mount *mp)
 	struct buf *bp;
 	struct m_ext2fs *fs;
 	struct ext2fs *es;
+	struct ext2fs_journal *jrnp = NULL;
 	struct cdev *dev = devvp->v_rdev;
 	struct g_consumer *cp;
 	struct bufobj *bo;
@@ -979,6 +981,34 @@ ext2_mountfs(struct vnode *devvp, struct mount *mp)
 	mp->mnt_kern_flag |= MNTK_LOOKUP_SHARED | MNTK_EXTENDED_SHARED |
 	    MNTK_USES_BCACHE;
 	MNT_IUNLOCK(mp);
+
+	/*
+	 * Check if journal is enabled and present.
+	 */
+	if (EXT2_HAS_COMPAT_FEATURE(fs, EXT2F_COMPAT_HASJOURNAL)) {
+		error = ext2_journal_open(mp, &jrnp);
+		if (error != 0) {
+			printf("ext2fs: failed to open journal. error: %d\n", error);
+			goto out;
+		} else {
+			printf("ext2fs: journal opened successfully\n");
+			printf("ext2fs: journal blocksize: %zu\n", jrnp->jrn_blocksize);
+			printf("ext2fs: journal max blocks: %ld\n", jrnp->jrn_max_blocks);
+			printf("ext2fs: journal first block: %ld\n", jrnp->jrn_first);
+			printf("ext2fs: journal last block: %ld\n", jrnp->jrn_last);
+
+			if (jrnp->jrn_flags & EXT2_JOURNAL_CLEAN) {
+				printf("ext2fs: journal is clean\n");
+			} else if (jrnp->jrn_flags & EXT2_JOURNAL_NEEDS_RECOVERY) {
+				printf("ext2fs: journal needs recovery\n");
+				// TODO handle recovery
+			}
+
+			ump->um_journal = jrnp;
+			ext2_journal_close(jrnp); // for now
+		}
+	}
+
 	return (0);
 out:
 	if (bp)
@@ -997,6 +1027,8 @@ out:
 		free(ump, M_EXT2MNT);
 		mp->mnt_data = NULL;
 	}
+	if (jrnp)
+		ext2_journal_close(jrnp);
 	return (error);
 }
 
