@@ -1005,7 +1005,8 @@ ext2_mountfs(struct vnode *devvp, struct mount *mp)
 			}
 
 			ump->um_journal = jrnp;
-			ext2_journal_close(jrnp); // for now
+			// TODO need to close journal properly or else mem leak
+			// ext2_journal_close(jrnp); // for now
 		}
 	}
 
