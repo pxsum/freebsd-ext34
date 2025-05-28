@@ -128,14 +128,19 @@ ext2_journal_open_inode(struct mount *mp, struct vnode **vpp,
 		return (EINVAL);
 	}
 
-	/* FIXME vfs_vget returns with invalid argument error. */
 	error = VFS_VGET(mp, EXT2_JOURNALINO, LK_EXCLUSIVE, vpp);
 	if (error != 0) {
 		*vpp = NULL;
 		printf("ext2fs: vfs_get failed: %d\n", error);
 		return (error);
 	}
-	error = bread(*vpp, 0, (int) fs->e2fs_bsize, NOCRED, &jrn_buf);
+
+	/* bufobj size must be initilized */
+	if ((*vpp)->v_bufobj.bo_bsize == 0) {
+	    (*vpp)->v_bufobj.bo_bsize = fs->e2fs_bsize;
+	}
+
+	error = bread(*vpp, 0, (daddr_t) fs->e2fs_bsize, NOCRED, &jrn_buf);
 	if (error != 0) {
 		printf("ext2fs: bread failed: %d\n", error);
 		vput(*vpp);

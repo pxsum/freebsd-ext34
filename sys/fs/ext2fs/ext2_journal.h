@@ -44,7 +44,7 @@
  * Journal block types
  */
 enum journal_block_type {
-	EXT2_JOURNAL_DESCRIPTOR_BLOCK,	/* descriptor data blocks */
+	EXT2_JOURNAL_DESCRIPTOR_BLOCK = 1,	/* descriptor data blocks */
 	EXT2_JOURNAL_COMMIT_BLOCK,	/* indicates transaction completion */
 	EXT2_JOURNAL_FORMAT_BASIC,	/* basic journal superblock format */
 	EXT2_JOURNAL_FORMAT_EXTENDED,	/* extended journal superblock */
@@ -55,7 +55,7 @@ enum journal_block_type {
  * Journal checksum types
  */
 enum journal_checksum_type {
-	EXT2_JOURNAL_CHECKSUM_CRC32,
+	EXT2_JOURNAL_CHECKSUM_CRC32 = 1,
 	EXT2_JOURNAL_CHECKSUM_MD5,
 	EXT2_JOURNAL_CHECKSUM_SHA1,
 	EXT2_JOURNAL_CHECKSUM_CRC32C
