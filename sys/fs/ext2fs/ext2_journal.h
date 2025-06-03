@@ -29,7 +29,6 @@
 #define _FS_EXT2FS_EXT2_JOURNAL_H_
 
 #include <sys/types.h>
-#include <fs/ext2fs/inode.h>
 
 #define	EXT2_JOURNAL_MAGIC 0xc03b3998
 #define	EXT2_JOURNAL_MIN_BLOCKS 1024
@@ -120,9 +119,9 @@ struct ext2fs_journal_revoke_tail {
  */
 struct ext2fs_journal_commit_header {
 	struct ext2fs_journal_block_header jch_header;
-	uint8_t jch_checksum_type;	/* type of checksum used */
-	uint8_t jch_checksum_size;	/* size of checksum */
-	uint8_t jch_padding[2];
+	uint8_t  jch_checksum_type;	/* type of checksum used */
+	uint8_t  jch_checksum_size;	/* size of checksum */
+	uint8_t  jch_padding[2];
 	uint32_t jch_checksum[JOURNAL_COMMIT_CHECKSUM_SIZE];
 	uint64_t jch_timestamp_sec;	/* commit time in secs */
 	uint32_t jch_timestamp_nsec;	/* commit time in nanosecs */
@@ -150,14 +149,14 @@ struct ext2fs_journal {
 	struct ext2fs_journal_transaction *jrn_active_trans;
 	struct ext2fs_journal_transaction *jrn_committing_trans;
 
-	uint32_t     jrn_flags;
-	size_t       jrn_blocksize;
-	blkcnt_t     jrn_max_blocks;
-	blkcnt_t     jrn_free_blocks;
-	e4fs_daddr_t jrn_first;
-	e4fs_daddr_t jrn_last;
-	e4fs_daddr_t jrn_log_start;
-	e4fs_daddr_t jrn_log_end;
+	uint32_t	jrn_flags;
+	uint32_t	jrn_blocksize;
+	uint32_t	jrn_max_blocks;
+	uint32_t	jrn_free_blocks;
+	daddr_t		jrn_first;
+	daddr_t		jrn_last;
+	daddr_t		jrn_log_start;
+	daddr_t		jrn_log_end;
 };
 
 
