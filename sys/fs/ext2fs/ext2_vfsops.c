@@ -994,8 +994,8 @@ ext2_mountfs(struct vnode *devvp, struct mount *mp)
 			printf("ext2fs: journal opened successfully\n");
 			printf("ext2fs: journal blocksize: %u\n", jrnp->jrn_blocksize);
 			printf("ext2fs: journal max blocks: %u\n", jrnp->jrn_max_blocks);
-			printf("ext2fs: journal first block: %lx\n", jrnp->jrn_first);
-			printf("ext2fs: journal last block: %lx\n", jrnp->jrn_last);
+			printf("ext2fs: journal first block: %u\n", jrnp->jrn_first);
+			printf("ext2fs: journal last block: %u\n", jrnp->jrn_last);
 
 			if (jrnp->jrn_flags & EXT2_JOURNAL_CLEAN) {
 				printf("ext2fs: journal is clean\n");

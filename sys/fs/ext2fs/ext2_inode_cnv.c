@@ -149,7 +149,8 @@ ext2_ei2i(struct ext2fs_dinode *ei, struct inode *ip)
 	uint16_t ei_extra_isize_le;
 	int i;
 
-	if ((ip->i_number < EXT2_FIRST_INO(fs) && ip->i_number != EXT2_ROOTINO && ip->i_number != EXT2_JOURNALINO) ||
+	if ((ip->i_number < EXT2_FIRST_INO(fs) && ip->i_number != EXT2_ROOTINO &&
+	    ip->i_number != EXT2_JOURNALINO) ||
 	    (ip->i_number < EXT2_ROOTINO) ||
 	    (ip->i_number > le32toh(fs->e2fs->e2fs_icount))) {
 		SDT_PROBE2(ext2fs, , trace, inode_cnv, 1, "bad inode number");
