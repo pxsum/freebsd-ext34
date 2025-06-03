@@ -40,18 +40,21 @@
  */
 
 /*
- * Journal block types
+ * Defines the different block types and journaling version.
  */
 enum journal_block_type {
 	EXT2_JOURNAL_DESCRIPTOR_BLOCK = 1,	/* descriptor data blocks */
 	EXT2_JOURNAL_COMMIT_BLOCK,	/* indicates transaction completion */
+
+	/* Journaling versions */
 	EXT2_JOURNAL_FORMAT_BASIC,	/* basic journal superblock format */
 	EXT2_JOURNAL_FORMAT_EXTENDED,	/* extended journal superblock */
+
 	EXT2_JOURNAL_REVOKE_BLOCK	/* block revocation records */
 };
 
 /*
- * Journal checksum types
+ * Journal checksum types.
  */
 enum journal_checksum_type {
 	EXT2_JOURNAL_CHECKSUM_CRC32 = 1,
@@ -61,7 +64,7 @@ enum journal_checksum_type {
 };
 
 /*
- * Every block in the journal starts with this header
+ * Common header found at the beginning of every metablock in the journal.
  */
 struct ext2fs_journal_block_header {
 	uint32_t jbh_magic;		/* journal magic number */
@@ -70,7 +73,7 @@ struct ext2fs_journal_block_header {
 };
 
 /*
- * Journal superblock
+ * On-disk structure for the journal superblock.
  */
 struct ext2fs_journal_sb {
 	struct ext2fs_journal_block_header jsb_header;/* common header */
@@ -98,7 +101,7 @@ struct ext2fs_journal_block_tail {
 };
 
 /*
- * Revoke blocks list blocks that should not be replayed during recovery
+ * Revoke blocks list blocks that should not be replayed during recovery.
  */
 struct ext2fs_journal_revoke_header {
 	struct ext2fs_journal_block_header jrh_header;
@@ -106,7 +109,7 @@ struct ext2fs_journal_revoke_header {
 };
 
 /*
- * Used for verifying revoke block integrity
+ * Used for verifying revoke block integrity.
  */
 struct ext2fs_journal_revoke_tail {
 	uint32_t jrt_checksum;
@@ -115,7 +118,7 @@ struct ext2fs_journal_revoke_tail {
 #define	JOURNAL_COMMIT_CHECKSUM_SIZE (32)
 
 /*
- * A commit block marks the end of a complete transaction in the journal
+ * A commit block marks the end of a complete transaction in the journal.
  */
 struct ext2fs_journal_commit_header {
 	struct ext2fs_journal_block_header jch_header;
@@ -127,11 +130,6 @@ struct ext2fs_journal_commit_header {
 	uint32_t jch_timestamp_nsec;	/* commit time in nanosecs */
 };
 
-/*
- * When loaded into memory, journal structures are converted to
- * host native byte order.
- */
-
 enum ext2_journal_state {
 	EXT2_JOURNAL_CLEAN,
 	EXT2_JOURNAL_NEEDS_RECOVERY
@@ -142,6 +140,11 @@ struct m_ext2fs;
 // TODO
 struct ext2fs_journal_transaction;
 
+/* In-memory representation of an active journal.
+ *
+ * The on-disk superblock is kept in big-endian while all other fields are in
+ * host byte order.
+ */
 struct ext2fs_journal {
 	struct vnode *jrn_vp;
 	struct m_ext2fs *jrn_fs;
@@ -153,12 +156,11 @@ struct ext2fs_journal {
 	uint32_t	jrn_blocksize;
 	uint32_t	jrn_max_blocks;
 	uint32_t	jrn_free_blocks;
-	daddr_t		jrn_first;
-	daddr_t		jrn_last;
-	daddr_t		jrn_log_start;
-	daddr_t		jrn_log_end;
+	uint32_t	jrn_first;
+	uint32_t	jrn_last;
+	uint32_t	jrn_log_start;
+	uint32_t	jrn_log_end;
 };
-
 
 int ext2_journal_open(struct mount *mp, struct ext2fs_journal **jrnpp);
 int ext2_journal_close(struct ext2fs_journal *jrnp);
