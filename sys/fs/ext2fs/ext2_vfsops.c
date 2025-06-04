@@ -130,7 +130,7 @@ ext2_mount(struct mount *mp)
 	accmode_t accmode;
 	char *path, *fspec;
 	int error, flags, len;
-	int journal_set, async_set, sync_set;
+	int journal_set, sync_set;
 
 	td = curthread;
 	opts = mp->mnt_optnew;
@@ -149,13 +149,12 @@ ext2_mount(struct mount *mp)
 		return (EINVAL);
 
 	journal_set = (vfs_getopt(opts, "journal", NULL, NULL) == 0);
-	async_set = (vfs_getopt(opts, "async", NULL, NULL) == 0);
 	sync_set = (vfs_getopt(opts, "sync", NULL, NULL) == 0);
 
 	/*
 	 * If journaling is on, make the default async.
 	 */
-	if (journal_set && !async_set && !sync_set) {
+	if (journal_set && !sync_set) {
 		mp->mnt_flag |= MNT_ASYNC;
 	}
 
