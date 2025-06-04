@@ -135,6 +135,12 @@ enum ext2_journal_state {
 	EXT2_JOURNAL_NEEDS_RECOVERY
 };
 
+enum ext2_journal_modes {
+	EXT2_DATA_MODE_JOURNAL,
+	EXT2_DATA_MODE_ORDERED,
+	EXT2_DATA_MODE_WRITEBACK,
+};
+
 struct vnode;
 struct m_ext2fs;
 // TODO
