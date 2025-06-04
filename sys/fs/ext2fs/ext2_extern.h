@@ -41,6 +41,8 @@
 struct ext2fs_dinode;
 struct ext2fs_direct_2;
 struct ext2fs_direct_tail;
+struct ext2fs_journal_sb;
+struct ext2fs_journal_block_header;
 struct ext2fs_searchslot;
 struct indir;
 struct inode;
@@ -129,6 +131,10 @@ int	ext2_ei_csum_verify(struct inode *, struct ext2fs_dinode *);
 void	ext2_ei_csum_set(struct inode *, struct ext2fs_dinode *);
 int	ext2_gd_csum_verify(struct m_ext2fs *, struct cdev *);
 void	ext2_gd_csum_set(struct m_ext2fs *);
+void	ext2_jsb_from_disk(struct ext2fs_journal_sb *host_jsb,
+    struct ext2fs_journal_sb *disk_jsb);
+void	ext2_jsb_to_disk(struct ext2fs_journal_sb *disk_jsb,
+    struct ext2fs_journal_sb *host_jsb);
 
 /* Flags to low-level allocation routines.
  * The low 16-bits are reserved for IO_ flags from vnode.h.

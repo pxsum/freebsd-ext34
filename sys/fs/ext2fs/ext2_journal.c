@@ -45,6 +45,8 @@
 #include <fs/ext2fs/fs.h>
 #include <fs/ext2fs/inode.h>
 
+#include <fs/ext2fs/ext2_extern.h>
+
 MALLOC_DEFINE(M_EXT2JOURNAL, "ext2fs_journal", "In-memory ext2 journal");
 MALLOC_DEFINE(M_EXT2JSB, "ext2fs_journal_sb", "In-memory copy of \
 	journal superblock");
@@ -136,7 +138,7 @@ ext2_journal_open_inode(struct mount *mp, struct vnode **vpp,
 	*jrn_sbpp = (struct ext2fs_journal_sb *)
 		malloc(sizeof(struct ext2fs_journal_sb), M_EXT2JSB, M_WAITOK);
 
-	memcpy(*jrn_sbpp, jrn_sbp, sizeof(struct ext2fs_journal_sb));
+	ext2_jsb_from_disk(*jrn_sbpp, jrn_sbp);
 
 	brelse(jrn_buf);
 	VOP_UNLOCK(*vpp);
@@ -152,9 +154,9 @@ ext2_journal_open_inode(struct mount *mp, struct vnode **vpp,
 static int
 ext2_journal_init(struct ext2fs_journal *jrnp)
 {
-	jrnp->jrn_blocksize = be32toh(jrnp->jrn_sb->jsb_blocksize);
-	jrnp->jrn_max_blocks = be32toh(jrnp->jrn_sb->jsb_max_blocks);
-	jrnp->jrn_first = be32toh(jrnp->jrn_sb->jsb_first_block);
+	jrnp->jrn_blocksize = jrnp->jrn_sb->jsb_blocksize;
+	jrnp->jrn_max_blocks = jrnp->jrn_sb->jsb_max_blocks;
+	jrnp->jrn_first = jrnp->jrn_sb->jsb_first_block;
 	jrnp->jrn_last = jrnp->jrn_first + jrnp->jrn_max_blocks - 1;
 
 	if (jrnp->jrn_max_blocks < EXT2_JOURNAL_MIN_BLOCKS) {
