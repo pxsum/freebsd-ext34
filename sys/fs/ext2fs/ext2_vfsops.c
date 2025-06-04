@@ -111,7 +111,7 @@ static int	ext2_compute_sb_data(struct vnode * devvp,
 
 static const char *ext2_opts[] = { "acls", "async", "noatime", "noclusterr",
     "noclusterw", "noexec", "export", "force", "from", "multilabel",
-    "suiddir", "nosymfollow", "sync", "union", NULL };
+    "suiddir", "nosymfollow", "sync", "union", "journal", NULL };
 
 /*
  * VFS Operations.
@@ -130,6 +130,7 @@ ext2_mount(struct mount *mp)
 	accmode_t accmode;
 	char *path, *fspec;
 	int error, flags, len;
+	int journal_set, async_set, sync_set;
 
 	td = curthread;
 	opts = mp->mnt_optnew;
@@ -146,6 +147,17 @@ ext2_mount(struct mount *mp)
 	error = vfs_getopt(opts, "from", (void **)&fspec, &len);
 	if (!error && fspec[len - 1] != '\0')
 		return (EINVAL);
+
+	journal_set = (vfs_getopt(opts, "journal", NULL, NULL) == 0);
+	async_set = (vfs_getopt(opts, "async", NULL, NULL) == 0);
+	sync_set = (vfs_getopt(opts, "sync", NULL, NULL) == 0);
+
+	/*
+	 * If journaling is on, make the default async.
+	 */
+	if (journal_set && !async_set && !sync_set) {
+		mp->mnt_flag |= MNT_ASYNC;
+	}
 
 	/*
 	 * If updating, check whether changing from read-only to
