@@ -38,6 +38,7 @@
 #include <fs/ext2fs/inode.h>
 #include <fs/ext2fs/ext2fs.h>
 #include <fs/ext2fs/ext2_dinode.h>
+#include <fs/ext2fs/ext2_journal.h>
 #include <fs/ext2fs/ext2_extern.h>
 
 SDT_PROVIDER_DECLARE(ext2fs);
@@ -334,4 +335,61 @@ ext2_i2ei(struct inode *ip, struct ext2fs_dinode *ei)
 	ext2_ei_csum_set(ip, ei);
 
 	return (0);
+}
+
+/*
+ * Converts big-endian journal superblock to host byte order.
+ */
+void
+ext2_jsb_from_disk(struct ext2fs_journal_sb *host_jsb,
+    struct ext2fs_journal_sb *disk_jsb)
+{
+	host_jsb->jsb_header.jbh_magic = be32toh(disk_jsb->jsb_header.jbh_magic);
+	host_jsb->jsb_header.jbh_blocktype = be32toh(disk_jsb->jsb_header.jbh_blocktype);
+	host_jsb->jsb_header.jbh_sequence_num = be32toh(disk_jsb->jsb_header.jbh_sequence_num);
+	host_jsb->jsb_blocksize = be32toh(disk_jsb->jsb_blocksize);
+	host_jsb->jsb_max_blocks = be32toh(disk_jsb->jsb_max_blocks);
+	host_jsb->jsb_first_block = be32toh(disk_jsb->jsb_first_block);
+	host_jsb->jsb_sequence_id = be32toh(disk_jsb->jsb_sequence_id);
+	host_jsb->jsb_start_block_num = be32toh(disk_jsb->jsb_start_block_num);
+	host_jsb->jsb_errno = be32toh(disk_jsb->jsb_errno);
+	host_jsb->jsb_feature_compat = be32toh(disk_jsb->jsb_feature_compat);
+	host_jsb->jsb_feature_incompat = be32toh(disk_jsb->jsb_feature_incompat);
+	host_jsb->jsb_feature_ro_compat = be32toh(disk_jsb->jsb_feature_ro_compat);
+	host_jsb->jsb_num_users = be32toh(disk_jsb->jsb_num_users);
+	host_jsb->jsb_dynamic_sb = be32toh(disk_jsb->jsb_dynamic_sb);
+	host_jsb->jsb_trans_max = be32toh(disk_jsb->jsb_trans_max);
+	host_jsb->jsb_trans_data_max = be32toh(disk_jsb->jsb_trans_data_max);
+	host_jsb->jsb_checksum_type = be32toh(disk_jsb->jsb_checksum_type);
+
+	memcpy(host_jsb->jsb_uuid, disk_jsb->jsb_uuid, 16);
+	memcpy(host_jsb->jsb_padding2, disk_jsb->jsb_padding2, 3);
+}
+
+/*
+ * Converts host byte order journal superblock to on-disk big endian format.
+ */
+void
+ext2_jsb_to_disk(struct ext2fs_journal_sb *disk_jsb,
+    struct ext2fs_journal_sb *host_jsb)
+{
+	disk_jsb->jsb_header.jbh_magic = htobe32(host_jsb->jsb_header.jbh_magic);
+	disk_jsb->jsb_header.jbh_blocktype = htobe32(host_jsb->jsb_header.jbh_blocktype);
+	disk_jsb->jsb_header.jbh_sequence_num = htobe32(host_jsb->jsb_header.jbh_sequence_num);
+	disk_jsb->jsb_blocksize = htobe32(host_jsb->jsb_blocksize);
+	disk_jsb->jsb_max_blocks = htobe32(host_jsb->jsb_max_blocks);
+	disk_jsb->jsb_first_block = htobe32(host_jsb->jsb_first_block);
+	disk_jsb->jsb_sequence_id = htobe32(host_jsb->jsb_sequence_id);
+	disk_jsb->jsb_start_block_num = htobe32(host_jsb->jsb_start_block_num);
+	disk_jsb->jsb_errno = htobe32(host_jsb->jsb_errno);
+	disk_jsb->jsb_feature_compat = htobe32(host_jsb->jsb_feature_compat);
+	disk_jsb->jsb_feature_incompat = htobe32(host_jsb->jsb_feature_incompat);
+	disk_jsb->jsb_feature_ro_compat = htobe32(host_jsb->jsb_feature_ro_compat);
+	disk_jsb->jsb_num_users = htobe32(host_jsb->jsb_num_users);
+	disk_jsb->jsb_dynamic_sb = htobe32(host_jsb->jsb_dynamic_sb);
+	disk_jsb->jsb_trans_max = htobe32(host_jsb->jsb_trans_max);
+	disk_jsb->jsb_trans_data_max = htobe32(host_jsb->jsb_trans_data_max);
+	disk_jsb->jsb_checksum_type = htobe32(host_jsb->jsb_checksum_type);
+
+	memcpy(disk_jsb->jsb_uuid, host_jsb->jsb_uuid, 16);
 }
