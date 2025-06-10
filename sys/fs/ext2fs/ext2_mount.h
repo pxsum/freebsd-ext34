@@ -32,7 +32,6 @@
 #ifndef _FS_EXT2FS_EXT2_MOUNT_H_
 #define	_FS_EXT2FS_EXT2_MOUNT_H_
 
-#include "fs/ext2fs/ext2_journal.h"
 #ifdef _KERNEL
 
 #ifdef MALLOC_DECLARE
@@ -49,7 +48,6 @@ struct ext2mount {
 
 	struct	m_ext2fs *um_e2fs;		/* EXT2FS */
 	struct	ext2fs_journal *um_journal;
-	enum	ext2_journal_modes journal_mode;
 
 	u_long	um_nindir;			/* indirect ptrs per block */
 	u_long	um_bptrtodb;			/* indir ptr to disk block */
