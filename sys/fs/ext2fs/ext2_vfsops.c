@@ -111,7 +111,7 @@ static int	ext2_compute_sb_data(struct vnode * devvp,
 
 static const char *ext2_opts[] = { "acls", "async", "noatime", "noclusterr",
     "noclusterw", "noexec", "export", "force", "from", "multilabel",
-    "suiddir", "nosymfollow", "sync", "union", "data", NULL };
+    "suiddir", "nosymfollow", "sync", "union", "journal", NULL };
 
 /*
  * VFS Operations.
@@ -129,10 +129,8 @@ ext2_mount(struct mount *mp)
 	struct nameidata nd, *ndp = &nd;
 	accmode_t accmode;
 	char *path, *fspec;
-	char *data_mode_str = NULL;
-	int data_mode = EXT2_DATA_MODE_ORDERED;
-	bool journal_set, sync_set;
 	int error, flags, len;
+	int journal_set, sync_set;
 
 	td = curthread;
 	opts = mp->mnt_optnew;
@@ -150,30 +148,7 @@ ext2_mount(struct mount *mp)
 	if (!error && fspec[len - 1] != '\0')
 		return (EINVAL);
 
-	error = vfs_getopt(opts, "data", (void **)&data_mode_str, &len);
-	/* Journaling mode is requested. */
-	if (!error) {
-	    if (data_mode_str[len - 1] != '\0') {
-		    printf("ext2fs: invalid data option format\n");
-		    return (EINVAL);
-	    }
-
-	    if (strcmp(data_mode_str, "journal") == 0) {
-		    data_mode = EXT2_DATA_MODE_JOURNAL;
-	    } else if (strcmp(data_mode_str, "ordered") == 0) {
-		    data_mode = EXT2_DATA_MODE_ORDERED;
-	    } else if (strcmp(data_mode_str, "writeback") == 0) {
-		    data_mode = EXT2_DATA_MODE_WRITEBACK;
-	    } else {
-		    return (EINVAL);
-	    }
-	    journal_set = true;
-	} else if (error != ENOENT) {
-		return (error);
-	} else {
-		journal_set = false;
-	}
-
+	journal_set = (vfs_getopt(opts, "journal", NULL, NULL) == 0);
 	sync_set = (vfs_getopt(opts, "sync", NULL, NULL) == 0);
 
 	/*
@@ -191,16 +166,6 @@ ext2_mount(struct mount *mp)
 		ump = VFSTOEXT2(mp);
 		fs = ump->um_e2fs;
 		error = 0;
-
-		/* Validate journal option for existing filesystem. */
-		if (journal_set &&
-		    !EXT2_HAS_COMPAT_FEATURE(fs, EXT2F_COMPAT_HASJOURNAL))
-		    {
-			    printf("ext2fs: journal options specified but \
-				existing filesystem has no journal\n");
-			    return (EINVAL);
-		    }
-
 		if (fs->e2fs_ronly == 0 &&
 		    vfs_flagopt(opts, "ro", NULL, 0)) {
 			error = VFS_SYNC(mp, MNT_WAIT);
@@ -327,14 +292,6 @@ ext2_mount(struct mount *mp)
 	}
 	ump = VFSTOEXT2(mp);
 	fs = ump->um_e2fs;
-
-	/*
-	 * Set journal data mode.
-	 *
-	 * The assumption is journaling mode is not needed during journal replay
-	 * which happens at the end of ext2_mountfs().
-	 */
-	ump->journal_mode = data_mode;
 
 	/*
 	 * Note that this strncpy() is ok because of a check at the start
