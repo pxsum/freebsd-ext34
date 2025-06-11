@@ -1013,6 +1013,12 @@ ext2_mountfs(struct vnode *devvp, struct mount *mp)
 			} else if (jrnp->jrn_flags & EXT2_JOURNAL_NEEDS_RECOVERY) {
 				printf("ext2fs: journal needs recovery\n");
 				// TODO handle recovery
+				error = ext2_journal_recover(jrnp);
+				if (error) {
+					printf("ext2fs: journal recovery error\n");
+				} else {
+					printf("ext2fs: journal recovery success\n");
+				}
 			}
 
 			ump->um_journal = jrnp;
