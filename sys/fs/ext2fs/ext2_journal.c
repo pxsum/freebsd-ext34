@@ -52,10 +52,10 @@ MALLOC_DEFINE(M_EXT2JSB, "ext2fs_journal_sb", "In-memory copy of \
 	journal superblock");
 
 /*
- * Verfies if the given data block is a valid journal block.
+ * Verify if the given data block is a valid journal block.
  */
 static bool
-ext2_verify_journal_block(void *data)
+ext2_journal_verify_block(void *data)
 {
 	struct ext2fs_journal_block_header *jrn_bhr =
 		(struct ext2fs_journal_block_header *) data;
@@ -114,7 +114,7 @@ ext2_journal_open_inode(struct mount *mp, struct vnode **vpp,
 	}
 
 	jrn_data = jrn_buf->b_data;
-	if (!ext2_verify_journal_block(jrn_data)) {
+	if (!ext2_journal_verify_block(jrn_data)) {
 		printf("ext2fs: journal magic number mismatch\n");
 		brelse(jrn_buf);
 		vput(*vpp);
@@ -142,6 +142,262 @@ ext2_journal_open_inode(struct mount *mp, struct vnode **vpp,
 
 	brelse(jrn_buf);
 	VOP_UNLOCK(*vpp);
+	return (0);
+}
+
+static uint32_t
+ext2_journal_block_type(void *data) {
+	struct ext2fs_journal_block_header *jrn_bhr =
+		(struct ext2fs_journal_block_header *) data;
+	return (be32toh(jrn_bhr->jbh_blocktype));
+}
+
+static uint32_t
+ext2_journal_tag_size(struct ext2fs_journal_sb *jsbp)
+{
+	uint32_t size = 0;
+
+	/* Add checksum size if checksum v2 feature is enabled */
+	if (jsbp->jsb_feature_incompat & EXT2_JOURNAL_INCOMPAT_CHECKSUM_V2) {
+	    size += sizeof(uint16_t);
+	}
+
+	/* Add appropriate tag size based on 64-bit feature */
+	if (jsbp->jsb_feature_incompat & EXT2_JOURNAL_INCOMPAT_64BIT) {
+	    size += 16;  // 64-bit tag size includes high block number
+	} else {
+	    size += 12;  // 32-bit tag size
+	}
+
+	return size;
+}
+
+static int
+ext2_journal_parse_desc_blk(void *data, uint32_t blk_size,
+    struct ext2fs_journal *jrnp)
+{
+	char *c_data = (char *)data;
+	int data_index = 0;
+	int tag_count = 0;
+	int max_size = blk_size;
+	bool found_last_tag = false;
+	struct ext2fs_journal_sb *jsb = jrnp->jrn_sb;
+	struct ext2fs_journal_block_header *header =
+		(struct ext2fs_journal_block_header *) data;
+	uint32_t stride = ext2_journal_tag_size(jsb);
+	struct ext2fs_journal_desc_tag *tag;
+
+	printf("desc block seq num: %u\n", be32toh(header->jbh_sequence_num));
+
+	max_size = blk_size - sizeof(struct ext2fs_journal_block_header);
+	/* Account for potential descriptor tail in checksum v2 */
+	if (jsb->jsb_feature_incompat & EXT2_JOURNAL_INCOMPAT_CHECKSUM_V2) {
+		max_size -= sizeof(struct ext2fs_journal_desc_tail);
+	}
+
+	/* Skip past the block header */
+	c_data += sizeof(struct ext2fs_journal_block_header);
+	data_index = 0;
+	while (data_index + stride <= max_size) {
+		tag = (struct ext2fs_journal_desc_tag *)(&(c_data[data_index]));
+
+		// TODO only print when debug flag is on
+		uint16_t flags = be16toh(tag->jdt_flags);
+		uint16_t checksum = be16toh(tag->jdt_checksum);
+		uint32_t blocknum_low = be32toh(tag->jdt_blocknum_low);
+		uint32_t blocknum_high = be32toh(tag->jdt_blocknum_high);
+
+		printf("desc blk: tag num: %d\n", tag_count);
+		printf("desc blk: tag flag: %u\n", flags);
+		printf("desc blk: tag checksum: %u\n", checksum);
+		printf("desc blk: blocknum low: %u\n", blocknum_low);
+		printf("desc blk: blocknum high: %u\n", blocknum_high);
+
+		if (flags & EXT2_JOURNAL_TAG_LAST_ENTRY) {
+			found_last_tag = true;
+			tag_count++;
+			break;
+		}
+
+		/* Move to next tag position */
+		data_index += stride;
+
+		if (!(flags & EXT2_JOURNAL_TAG_SAME_UUID)) {
+			data_index += 16; // UUID is 16 bytes
+			/* Additional bounds check after UUID */
+			if (data_index >= max_size) {
+				printf("desc blk: UUID field extends beyond block boundary\n");
+				break;
+			}
+		}
+		tag_count++;
+	}
+
+	if (!found_last_tag) {
+		printf("desc blk: reached the end of block without last entry flag\n");
+		return (EINVAL);
+	}
+
+	printf("desc blk: total tags found: %d\n", tag_count);
+	return tag_count;
+}
+
+// TODO check seq number of commits to ensure valid commit
+static int
+ext2_journal_walk_trans(struct ext2fs_journal *jrnp, uint32_t trans_start,
+	uint32_t *next_trans_start)
+{
+	int error, blk_count;
+	struct buf *jrn_buf;
+	void *jrn_data;
+	uint32_t curr_blk;
+	struct vnode *vp = jrnp->jrn_vp;
+	struct m_ext2fs *fs = jrnp->jrn_fs;
+
+	/* Read the descriptor block */
+	error = bread(vp, trans_start, (daddr_t) fs->e2fs_bsize, NOCRED, &jrn_buf);
+	if (error) {
+		printf("ext2_journal_walk_trans: desc block read fail: %d\n", error);
+		return (error);
+	}
+
+	jrn_data = jrn_buf->b_data;
+	if (!ext2_journal_verify_block(jrn_data)) {
+		printf("ext2_journal_walk_trans: desc block has invalid magic num\n");
+		brelse(jrn_buf);
+		return (EINVAL);
+	}
+	if (ext2_journal_block_type(jrn_data) != EXT2_JOURNAL_DESCRIPTOR_BLOCK) {
+		printf("ext2_journal_walk_trans: no valid des block\n");
+		brelse(jrn_buf);
+		return (EINVAL);
+	}
+	/* Read and print descriptor block data */
+	blk_count = ext2_journal_parse_desc_blk(jrn_buf, jrnp->jrn_blocksize, jrnp);
+	brelse(jrn_buf);
+
+	if (blk_count < 0) {
+		printf("ext2_journal_walk_trans: invalid blk count for trans/n");
+		return (EINVAL);
+	}
+
+	printf("ext2_journal_walk_trans: transaction has %d data blocks\n", blk_count);
+
+	/* Read and print data in actual journal */
+	curr_blk = trans_start + 1;
+	for (int i = 0; i < blk_count; i++) {
+		/* Handle journal wraparound */
+		if (curr_blk > jrnp->jrn_last) {
+			curr_blk = jrnp->jrn_first + (curr_blk - jrnp->jrn_last);
+		}
+
+		error = bread(vp, curr_blk, (daddr_t) fs->e2fs_bsize, NOCRED, &jrn_buf);
+		if (error) {
+			printf("ext2_journal_walk_trans: data block %u read fail: %d/n", curr_blk, error);
+			return (error);
+		}
+
+		jrn_data = jrn_buf->b_data;
+
+		if (ext2_journal_verify_block(jrn_data)) {
+			uint32_t block_type = ext2_journal_block_type(jrn_data);
+			printf(" WARNING: data block has journal magic type=%u/n", block_type);
+		}
+		brelse(jrn_buf);
+		curr_blk++;
+	}
+
+	/* We expect the next block to be a commit or revoke block */
+	if (curr_blk > jrnp->jrn_last) {
+		curr_blk = jrnp->jrn_first + (curr_blk - jrnp->jrn_last);
+	}
+
+	error = bread(vp, curr_blk, (daddr_t) fs->e2fs_bsize, NOCRED, &jrn_buf);
+	if (error) {
+		printf("ext2_journal_walk_trans: commit/revoke block read fail: %d\n", error);
+		return (error);
+	}
+
+	jrn_data = jrn_buf->b_data;
+	if (!ext2_journal_verify_block(jrn_data)) {
+		printf("ext2_journal_walk_trans: commit/revoke block invalid magic\n");
+		brelse(jrn_buf);
+		return (EINVAL);
+	}
+
+	uint32_t block_type = ext2_journal_block_type(jrn_data);
+	struct ext2fs_journal_block_header *header =
+		(struct ext2fs_journal_block_header *) jrn_data;
+
+	if (block_type == EXT2_JOURNAL_COMMIT_BLOCK) {
+		printf("ext2_journal_walk_trans: found commit block at %u\n", curr_blk);
+		printf("  commit seq num: %u\n", be32toh(header->jbh_sequence_num));
+	} else if (block_type == EXT2_JOURNAL_REVOKE_BLOCK) {
+		printf("ext2_journal_walk_trans: found revoke block at %u\n", curr_blk);
+		printf("  revoke seq num: %u\n", be32toh(header->jbh_sequence_num));
+		// TODO parse revoke block
+		// TODO track a list of global reboke blocks to ensure we do not
+		// replay those blocks
+	} else {
+		printf("ext2_journal_walk_trans: unexpected block type %u at %u\n",
+		    block_type, curr_blk);
+		brelse(jrn_buf);
+		return (EINVAL);
+	}
+
+	brelse(jrn_buf);
+
+	/* Calculate start of next transaction */
+	curr_blk++;
+	if (curr_blk > jrnp->jrn_last) {
+		curr_blk = jrnp->jrn_first + (curr_blk - jrnp->jrn_last);
+	}
+
+	printf("ext2_journal_walk_trans: next transaction should start at %u\n", curr_blk);
+	*next_trans_start = curr_blk;
+	return (0);
+}
+
+/*
+ * Starts journal recovery / replay.
+ */
+int
+ext2_journal_recover(struct ext2fs_journal *jrnp)
+{
+	uint32_t curr_trans_start = jrnp->jrn_log_start;
+	int32_t next_trans_start;
+	int error;
+
+	printf("IN ext2_journal_recover\n");
+	if (!(jrnp->jrn_flags & EXT2_JOURNAL_NEEDS_RECOVERY)) {
+		printf("ext2_journal_recover: recovery not needed\n");
+		return (EINVAL);
+	}
+
+	/* Parse transactions for now */
+	/* While valid transaction, parse the next transaction */
+	while ((error =
+		ext2_journal_walk_trans(jrnp, curr_trans_start, &next_trans_start)) == 0) {
+		if (next_trans_start == jrnp->jrn_log_start) {
+			printf("ext2_journal_recover: reached starting point\n");
+			break;
+		}
+
+		if (next_trans_start == curr_trans_start) {
+			printf("ext2_journal_recover: no progress made\n");
+			break;
+		}
+
+		curr_trans_start = next_trans_start;
+	}
+
+	/* Assume parsing error means end of our journal or corruption. */
+	if (error != 0) {
+		printf("ext2_journal_recover: parsing error at: %d\n", next_trans_start);
+		return (error);
+	}
+
+	printf("ext2_journal_recover: recovery end\n");
 	return (0);
 }
 

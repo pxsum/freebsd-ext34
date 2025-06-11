@@ -34,6 +34,11 @@
 #define	EXT2_JOURNAL_MIN_BLOCKS 1024
 
 
+#define EXT2_JOURNAL_INCOMPAT_REVOKE		(1)
+#define EXT2_JOURNAL_INCOMPAT_64BIT		(2)
+#define EXT2_JOURNAL_INCOMPAT_ASYNC_COMMIT	(4)
+#define EXT2_JOURNAL_INCOMPAT_CHECKSUM_V2	(8)
+
 /*
  * The following structures represent the on-disk journal format.
  * All fields are stored in big-endian byte order on disk.
@@ -79,9 +84,9 @@ struct ext2fs_journal_sb {
 	struct ext2fs_journal_block_header jsb_header;/* common header */
 	uint32_t jsb_blocksize;		/* device block size */
 	uint32_t jsb_max_blocks;	/* total blocks in this journal */
-	uint32_t jsb_first_block;	/* first block of log */
+	uint32_t jsb_first_block;	/* static first block of log */
 	uint32_t jsb_sequence_id;	/* first commit id */
-	uint32_t jsb_start_block_num;	/* first block of the start of log */
+	uint32_t jsb_start_block_num;	/* dynamic starting block of log */
 	uint32_t jsb_errno;		/* error value */
 	uint32_t jsb_feature_compat;	/* compatiable features */
 	uint32_t jsb_feature_incompat;	/* incompatiable features */
@@ -96,7 +101,19 @@ struct ext2fs_journal_sb {
 	uint32_t jsb_num_fc_blocks;	/* # of fast commit blocks in journal */
 };
 
-struct ext2fs_journal_block_tail {
+#define EXT2_JOURNAL_TAG_ESCAPED         (1)
+#define EXT2_JOURNAL_TAG_SAME_UUID       (2)
+#define EXT2_JOURNAL_TAG_DELETED         (4)
+#define EXT2_JOURNAL_TAG_LAST_ENTRY      (8)
+
+struct ext2fs_journal_desc_tag {
+	uint32_t  jdt_blocknum_low;	/* low bits of block num*/
+	uint16_t  jdt_checksum;		/* checksum */
+	uint16_t  jdt_flags;		/* flags for block */
+	uint32_t  jdt_blocknum_high;	/* high bits of blocknum for 64-bit fs*/
+};
+
+struct ext2fs_journal_desc_tail {
 	uint32_t jbt_checksum;
 };
 
@@ -164,5 +181,6 @@ struct ext2fs_journal {
 
 int ext2_journal_open(struct mount *mp, struct ext2fs_journal **jrnpp);
 int ext2_journal_close(struct ext2fs_journal *jrnp);
+int ext2_journal_recover(struct ext2fs_journal *jrnp);
 
 #endif	/* !_FS_EXT2FS_EXT2_JOURNAL_H_ */
