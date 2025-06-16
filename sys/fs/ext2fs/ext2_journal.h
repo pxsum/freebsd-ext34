@@ -29,6 +29,7 @@
 #define _FS_EXT2FS_EXT2_JOURNAL_H_
 
 #include <sys/types.h>
+#include <sys/queue.h>
 
 #define	EXT2_JOURNAL_MAGIC 0xc03b3998
 #define	EXT2_JOURNAL_MIN_BLOCKS 1024
@@ -152,10 +153,44 @@ enum ext2_journal_state {
 	EXT2_JOURNAL_NEEDS_RECOVERY
 };
 
+enum ext2_trans_state {
+	EXT2_TRANS_RUNNING,
+	EXT2_TRANS_LOCKED,
+	EXT2_TRANS_FLUSH,
+	EXT2_TRANS_COMMIT
+};
+
+enum ext2_jbuf_type {
+	EXT2_JBUF_DATA,
+	EXT2_JBUF_METADATA
+};
+
+struct ext2_buf {
+	TAILQ_ENTRY(ext2_jbuf) jb_list;
+	struct buf *jb_bug;
+	enum ext2_jbuf_type jb_type;
+	uint32_t jb_blocknr;
+};
+
+struct ext2fs_journal_transaction {
+	struct ext2fs_journal *jt_journal;
+	enum ext2_trans_state jt_state;
+
+	int jt_refcount;
+	struct thread *jt_owner;
+
+	int jt_blocks_used;
+	int jt_blocks_reserved;
+
+	/* Buffer lists for ordered journaling */
+	TAILQ_HEAD(, ext2_jbuf) jt_data_buffers;
+	TAILQ_HEAD(, ext2_jbuf) jt_metadata_buffers;
+	int jt_data_count;
+	int jt_metadata_count;
+};
+
 struct vnode;
 struct m_ext2fs;
-// TODO
-struct ext2fs_journal_transaction;
 
 /* In-memory representation of an active journal.
  *
@@ -177,10 +212,17 @@ struct ext2fs_journal {
 	uint32_t	jrn_last;
 	uint32_t	jrn_log_start;
 	uint32_t	jrn_log_end;
+
+	struct mtx jt_lock;
 };
 
 int ext2_journal_open(struct mount *mp, struct ext2fs_journal **jrnpp);
 int ext2_journal_close(struct ext2fs_journal *jrnp);
 int ext2_journal_recover(struct ext2fs_journal *jrnp);
+
+int ext2_journal_start(struct ext2fs_journal *jrnp, int nblocks);
+int ext2_journal_stop(struct ext2fs_journal *jrnp, int nblocks);
+int ext2_journal_dirty_metadata(struct ext2fs_journal *jrnp, struct buf *bp);
+int ext2_journal_dirty_data(struct ext2fs_journal *jrnp, struct buf *bp);
 
 #endif	/* !_FS_EXT2FS_EXT2_JOURNAL_H_ */
