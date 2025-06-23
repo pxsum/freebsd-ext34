@@ -50,6 +50,8 @@
 MALLOC_DEFINE(M_EXT2JOURNAL, "ext2fs_journal", "In-memory ext2 journal");
 MALLOC_DEFINE(M_EXT2JSB, "ext2fs_journal_sb", "In-memory copy of \
 	journal superblock");
+MALLOC_DEFINE(M_EXT2JTRANS, "ext2fs_journal_trans", "ext2 journal transaction");
+MALLOC_DEFINE(M_EXT2JBUF, "ext2fs_journal_buf", "ext2 journal buffer descriptor");
 
 /*
  * Verify if the given data block is a valid journal block.
@@ -483,5 +485,325 @@ ext2_journal_open(struct mount *mp, struct ext2fs_journal **jrnpp)
 		return (error);
 	}
 	ump->um_journal = *jrnpp;
+	return (0);
+}
+
+
+/*
+ * Buffer i/o completion callback to ensure data blocks written before metadata
+ * in ordered-mode.
+ */
+static void
+ext2_journal_biodone(struct buf *bp)
+{
+	struct ext2_journal_buf *jbuf;
+	struct ext2fs_journal_transaction *trans;
+	struct ext2fs_journal *jrnp;
+
+	jbuf = bp->b_fsprivate1;
+	trans = jbuf->jb_owning_trans;
+	jrnp = trans->jt_journal;
+
+	mtx_lock(&jrnp->jrn_lock);
+	trans->jt_pending_data--;
+
+	if (trans->jt_pending_data == 0) {
+		/* All data I/O complete so signal waiters */
+		cv_broadcast(&trans->jt_iowait_cv);
+	}
+
+	mtx_unlock(&jrnp->jrn_lock);
+}
+
+/*
+ * Allocate and initialize a journal buffer.
+ */
+static struct ext2_journal_buf *
+ext2_journal_buf_alloc(struct ext2fs_journal *jrnp, struct buf *bp,
+    enum ext2_journal_buf_type type)
+{
+	struct ext2_journal_buf *jbuf;
+
+	jbuf = malloc(sizeof(struct ext2_journal_buf), M_EXT2JBUF,
+	    M_WAITOK | M_ZERO);
+
+	jbuf->jb_owning_trans = jrnp->jrn_active_trans;
+	jbuf->jb_buf = bp;
+	jbuf->jb_type = type;
+	jbuf->jb_blocknr = bp->b_lblkno;
+
+	/* Faster way to find the jbuf */
+	bp->b_fsprivate1 = jbuf;
+
+	return (jbuf);
+}
+
+/*
+ * Free a journal buf type, does not free kernel buf struct.
+ */
+static void
+ext2_journal_buf_free(struct ext2_journal_buf *jbuf)
+{
+	if (jbuf == NULL)
+		return;
+
+	free(jbuf, M_EXT2JBUF);
+}
+
+/*
+ * Free all jbufs in a list.
+ */
+static void
+ext2_journal_buf_free_list(struct ext2_journal_buf_list *head)
+{
+	struct ext2_journal_buf *jbuf, *next;
+
+	TAILQ_FOREACH_SAFE(jbuf, head, jb_list, next) {
+		TAILQ_REMOVE(head, jbuf, jb_list);
+		ext2_journal_buf_free(jbuf);
+	}
+}
+
+/*
+ * Allocate and initialize a transaction.
+ */
+static struct ext2fs_journal_transaction *
+ext2_journal_transaction_alloc(struct ext2fs_journal *journal)
+{
+	struct ext2fs_journal_transaction *trans;
+
+	trans = malloc(sizeof(struct ext2fs_journal_transaction), M_EXT2JTRANS,
+	    M_WAITOK | M_ZERO);
+
+	trans->jt_journal = journal;
+	trans->jt_state = EXT2_TRANS_RUNNING;
+	trans->jt_refcount = 0;
+	trans->jt_owner = NULL;
+	trans->jt_blocks_used = 0;
+	trans->jt_blocks_reserved = 0;
+	trans->jt_data_count = 0;
+	trans->jt_metadata_count = 0;
+	trans->jt_pending_data = 0;
+
+	TAILQ_INIT(&trans->jt_data_buffers);
+	TAILQ_INIT(&trans->jt_metadata_buffers);
+	cv_init(&trans->jt_iowait_cv, "jrniowait");
+
+	return (trans);
+}
+
+/*
+ * Free a transaction and all associated resources.
+ */
+static void
+ext2_journal_transaction_free(struct ext2fs_journal_transaction *trans)
+{
+	if (trans == NULL)
+		return;
+
+	/* issue if still waiting for data writes */
+	KASSERT(trans->jt_pending_data == 0,
+	    ("ext2_journal_transaction_free: pending I/O"));
+
+	/* Free all journal buffer descriptors */
+	ext2_journal_buf_free_list(&trans->jt_data_buffers);
+	ext2_journal_buf_free_list(&trans->jt_metadata_buffers);
+
+	/* Destroy condition variable */
+	cv_destroy(&trans->jt_iowait_cv);
+
+	free(trans, M_EXT2JTRANS);
+}
+
+/*
+ * Mark a data jbuf as dirty.
+ */
+int
+ext2_journal_dirty_data(struct ext2fs_journal *jrnp, struct buf *bp)
+{
+	struct ext2fs_journal_transaction *trans;
+	struct ext2_journal_buf *jbuf;
+
+	mtx_lock(&jrnp->jrn_lock);
+	trans = jrnp->jrn_active_trans;
+
+	if (trans == NULL || trans->jt_owner != curthread) {
+		mtx_unlock(&jrnp->jrn_lock);
+		return (EINVAL);
+	}
+
+	/* Check if buffer already tracked */
+	TAILQ_FOREACH(jbuf, &trans->jt_data_buffers, jb_list) {
+		if (jbuf->jb_buf == bp) {
+			mtx_unlock(&jrnp->jrn_lock);
+			return (0);
+		}
+	}
+
+	jbuf = ext2_journal_buf_alloc(jrnp, bp, EXT2_JBUF_DATA);
+
+	/* Set up completion callback */
+	bp->b_fsprivate1 = jbuf;
+	if (bp->b_iodone != NULL) {
+		printf("Assumption of b_iodone being used is wrong\n");
+	}
+	bp->b_iodone = ext2_journal_biodone;
+
+	TAILQ_INSERT_TAIL(&trans->jt_data_buffers, jbuf, jb_list);
+	trans->jt_data_count++;
+	trans->jt_pending_data++;
+
+	mtx_unlock(&jrnp->jrn_lock);
+	return (0);
+}
+
+
+/*
+ * Mark a data jbuf as dirty.
+ *
+ * We need to ensure the buffer cache does not write our data to disk or evict
+ * our buffer.
+ */
+int
+ext2_journal_dirty_metadata(struct ext2fs_journal *jrnp, struct buf *bp)
+{
+	struct ext2fs_journal_transaction *trans;
+	struct ext2_journal_buf *jbuf;
+
+	mtx_lock(&jrnp->jrn_lock);
+	trans = jrnp->jrn_active_trans;
+
+	if (trans == NULL || trans->jt_owner != curthread) {
+		mtx_unlock(&jrnp->jrn_lock);
+		return (EINVAL);
+	}
+
+
+	/* Check if buffer already tracked */
+	TAILQ_FOREACH(jbuf, &trans->jt_metadata_buffers, jb_list) {
+		if (jbuf->jb_buf == bp) {
+			mtx_unlock(&jrnp->jrn_lock);
+			return (0);
+		}
+	}
+
+	/* Note to self: the following code now assumes this is a new buf */
+
+	/* Set buf to be dirty */
+	bdwrite(bp);
+
+	/* Notifies the buffer cache we are doing our own management */
+	bp->b_flags |= B_MANAGED;
+
+	/*
+	 * Remove the buffer from the freelist to prevent buf_daemon writing
+	 * data to disk or the buf being recycled
+	 */
+	bremfree(bp);
+
+	jbuf = ext2_journal_buf_alloc(jrnp, bp, EXT2_JBUF_METADATA);
+
+	if (bp->b_iodone != NULL) {
+		printf("Assumption of b_iodone being not used is wrong\n");
+		return (EINVAL);
+	}
+
+	bp->b_iodone = ext2_journal_biodone;
+
+	TAILQ_INSERT_TAIL(&trans->jt_metadata_buffers, jbuf, jb_list);
+	trans->jt_metadata_count++;
+
+	mtx_unlock(&jrnp->jrn_lock);
+	return (0);
+}
+
+/*
+ * Starts a transaction or joins the current transaction if a nested operation.
+ */
+int
+ext2_journal_start(struct ext2fs_journal *jrnp, int nblocks)
+{
+	struct ext2fs_journal_transaction *trans;
+	struct thread *td = curthread;
+
+	mtx_lock(&jrnp->jrn_lock);
+
+	while ((trans = jrnp->jrn_active_trans) != NULL) {
+		/* Same thread so must be a nested file operation */
+		if (trans->jt_owner == td) {
+			trans->jt_refcount++;
+			trans->jt_blocks_reserved += nblocks;
+			mtx_unlock(&jrnp->jrn_lock);
+			return (0);
+		}
+
+		cv_wait(&jrnp->jrn_trans_cv, &jrnp->jrn_lock);
+	}
+
+	/* Check if we're in commit phase */
+	while (jrnp->jrn_committing_trans != NULL) {
+		cv_wait(&jrnp->jrn_trans_cv, &jrnp->jrn_lock);
+	}
+
+	/* Start new transaction */
+	trans = ext2_journal_transaction_alloc(jrnp);
+	trans->jt_journal = jrnp;
+	trans->jt_state = EXT2_TRANS_RUNNING;
+	trans->jt_refcount = 1;
+	trans->jt_owner = td;
+	trans->jt_blocks_reserved = nblocks;
+	trans->jt_pending_data = 0;
+
+	jrnp->jrn_active_trans = trans;
+	mtx_unlock(&jrnp->jrn_lock);
+
+	return (0);
+}
+
+static int
+ext2_journal_commit_trans(struct ext2fs_journal *jrnp)
+{
+	// TODO
+	return (0);
+}
+
+/*
+ * Commit the transaction if all operations have completed. Else just decrement
+ * refcount.
+ */
+int
+ext2_journal_stop(struct ext2fs_journal *jrnp)
+{
+	struct ext2fs_journal_transaction *trans;
+	struct thread *td = curthread;
+	bool should_commit = false;
+
+	mtx_lock(&jrnp->jrn_lock);
+	trans = jrnp->jrn_active_trans;
+
+	if (trans == NULL || trans->jt_owner != td) {
+		mtx_unlock(&jrnp->jrn_lock);
+		return (EINVAL);
+	}
+
+	trans->jt_refcount--;
+	if (trans->jt_refcount == 0) {
+		/* Last reference so commit for now */
+		/* Can optimize later */
+		jrnp->jrn_active_trans = NULL;
+		jrnp->jrn_committing_trans = trans;
+		should_commit = true;
+
+		/* Wake up any threads waiting to start new transaction */
+		cv_broadcast(&jrnp->jrn_trans_cv);
+	}
+
+	mtx_unlock(&jrnp->jrn_lock);
+
+	if (should_commit) {
+		printf("Journal is commiting\n");
+		return ext2_journal_commit_trans(jrnp);
+	}
+
 	return (0);
 }
