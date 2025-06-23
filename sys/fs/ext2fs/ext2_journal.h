@@ -218,6 +218,7 @@ struct ext2fs_journal {
 	uint32_t	jrn_last;
 	uint32_t	jrn_log_start;
 	uint32_t	jrn_log_end;
+	uint32_t	jrn_sequence;
 
 	struct mtx jrn_lock;
 	struct cv jrn_trans_cv;
