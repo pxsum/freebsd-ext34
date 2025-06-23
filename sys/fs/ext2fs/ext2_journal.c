@@ -142,7 +142,7 @@ ext2_journal_open_inode(struct mount *mp, struct vnode **vpp,
 
 	ext2_jsb_from_disk(*jrn_sbpp, jrn_sbp);
 
-	brelse(jrn_buf);
+	bqrelse(jrn_buf);
 	VOP_UNLOCK(*vpp);
 	return (0);
 }
@@ -370,7 +370,7 @@ ext2_journal_recover(struct ext2fs_journal *jrnp)
 	int32_t next_trans_start;
 	int error;
 
-	printf("IN ext2_journal_recover\n");
+	printf("In ext2_journal_recover\n");
 	if (!(jrnp->jrn_flags & EXT2_JOURNAL_NEEDS_RECOVERY)) {
 		printf("ext2_journal_recover: recovery not needed\n");
 		return (EINVAL);
@@ -689,8 +689,6 @@ ext2_journal_dirty_metadata(struct ext2fs_journal *jrnp, struct buf *bp)
 
 	/* Note to self: the following code now assumes this is a new buf */
 
-	/* Set buf to be dirty */
-	bdwrite(bp);
 
 	/* Notifies the buffer cache we are doing our own management */
 	bp->b_flags |= B_MANAGED;
@@ -700,6 +698,9 @@ ext2_journal_dirty_metadata(struct ext2fs_journal *jrnp, struct buf *bp)
 	 * data to disk or the buf being recycled
 	 */
 	bremfree(bp);
+
+	/* Set buf to be dirty but will not add it back to buffer free list*/
+	bdwrite(bp);
 
 	jbuf = ext2_journal_buf_alloc(jrnp, bp, EXT2_JBUF_METADATA);
 
@@ -761,10 +762,179 @@ ext2_journal_start(struct ext2fs_journal *jrnp, int nblocks)
 }
 
 static int
+ext2_journal_write_desc_blk(struct ext2fs_journal *jrnp, uint32_t *blknu)
+{
+	struct ext2fs_journal_transaction *trans = jrnp->jrn_committing_trans;
+	struct ext2fs_journal_block_header *header;
+	struct ext2fs_journal_desc_tag *tag;
+	struct ext2_journal_buf *jbuf;
+	struct buf *desc_buf;
+	char *desc_data;
+	uint32_t tag_offset = sizeof(struct ext2fs_journal_block_header);
+	uint32_t tag_size = ext2_journal_tag_size(jrnp->jrn_sb);
+	int error;
+	bool last_tag = false;
+
+	desc_buf = getblk(jrnp->jrn_vp, *blknu, jrnp->jrn_blocksize, 0, 0, 0);
+	if (desc_buf == NULL) {
+		return (EINVAL);
+	}
+
+	desc_data = desc_buf->b_data;
+	memset(desc_data, 0, jrnp->jrn_blocksize);
+
+	header = (struct ext2fs_journal_block_header *) desc_data;
+	header->jbh_magic = htobe32(EXT2_JOURNAL_MAGIC);
+	header->jbh_blocktype = htobe32(EXT2_JOURNAL_DESCRIPTOR_BLOCK);
+	header->jbh_sequence_num = htobe32(jrnp->jrn_sequence);
+
+	/* Write tags for each metadata buf */
+	TAILQ_FOREACH(jbuf, &trans->jt_metadata_buffers, jb_list) {
+		// TODO ensure metadata fits in one desc blk, or split into mult
+		tag = (struct ext2fs_journal_desc_tag *)(desc_data +
+		    tag_offset);
+
+		/* Check if this is the last tag */
+		last_tag = (TAILQ_NEXT(jbuf, jb_list) == NULL);
+
+		tag->jdt_blocknum_low = htobe32(jbuf->jb_blocknr);
+		tag->jdt_flags = htobe16(
+		    last_tag ? EXT2_JOURNAL_TAG_LAST_ENTRY : 0);
+		tag->jdt_checksum = 0; /* TODO: implement checksums */
+
+		tag_offset += tag_size;
+
+		if (last_tag)
+			break;
+	}
+	/* Write desc block syncly for now */
+	error = bwrite(desc_buf);
+	if (error) {
+		return (error);
+	}
+
+
+	/* Handle circular journal wraparound */
+	(*blknu)++;
+	if (*blknu > jrnp->jrn_last) {
+		*blknu = jrnp->jrn_first;
+	}
+
+	return (0);
+}
+
+static int
+ext2_journal_write_commit_blk(struct ext2fs_journal *jrnp,
+    uint32_t *blknu)
+{
+	struct ext2fs_journal_commit_header *header;
+	struct buf *commit_buf;
+	int error;
+
+
+	commit_buf = getblk(jrnp->jrn_vp, *blknu, jrnp->jrn_blocksize,
+	    0, 0, 0);
+	if (commit_buf == NULL) {
+		return (EINVAL);
+	}
+
+	// check if getblk memsets for us
+	memset(commit_buf->b_data, 0, jrnp->jrn_blocksize);
+
+	header = (struct ext2fs_journal_commit_header *) commit_buf->b_data;
+	header->jch_header.jbh_magic = htobe32(EXT2_JOURNAL_MAGIC);
+	header->jch_header.jbh_blocktype = htobe32(EXT2_JOURNAL_COMMIT_BLOCK);
+	header->jch_header.jbh_sequence_num = htobe32(jrnp->jrn_sequence);
+
+	error = bwrite(commit_buf);
+	if (error) {
+		return (error);
+	}
+
+	(*blknu)++;
+	/* Handle circular journal wraparound */
+	if (*blknu > jrnp->jrn_last) {
+		*blknu = jrnp->jrn_first;
+	}
+
+	return (0);
+}
+
+
+static int
 ext2_journal_commit_trans(struct ext2fs_journal *jrnp)
 {
-	// TODO
+	struct ext2fs_journal_transaction *trans;
+	struct ext2_journal_buf *jbuf;
+	uint32_t jrn_blknu;
+	int error = 0;
+
+	mtx_lock(&jrnp->jrn_lock);
+	trans = jrnp->jrn_committing_trans;
+
+	if (trans == NULL) {
+		mtx_unlock(&jrnp->jrn_lock);
+		return (EINVAL);
+	}
+
+	/* Allocate journal blocks */
+	jrn_blknu = jrnp->jrn_log_end;
+
+	/* Wait for all data i/o to finish first in ordered mode */
+	while (trans->jt_pending_data > 0) {
+		cv_wait(&trans->jt_iowait_cv, &jrnp->jrn_lock);
+	}
+
+	trans->jt_state = EXT2_TRANS_COMMIT;
+	mtx_unlock(&jrnp->jrn_lock);
+
+	if (trans->jt_metadata_count > 0) {
+		/* Write descriptor block */
+		error = ext2_journal_write_desc_blk(jrnp, &jrn_blknu);
+		if (error) {
+			goto cleanup;
+		}
+
+		/* Write metadata blocks to journal */
+		TAILQ_FOREACH(jbuf, &trans->jt_metadata_buffers, jb_list) {
+			struct buf *disk_jbuf;
+
+			/* Get journal buffer */
+			disk_jbuf = getblk(jrnp->jrn_vp, jrn_blknu,
+			    jrnp->jrn_blocksize, 0, 0, 0);
+			if (disk_jbuf == NULL) {
+				goto cleanup;
+			}
+
+			/* Copy metadata to on-disk journal buf */
+			memcpy(disk_jbuf->b_data, jbuf->jb_buf->b_data,
+			    jrnp->jrn_blocksize);
+
+			/* Write to journal, sync for now */
+			error = bwrite(disk_jbuf);
+			if (error) {
+				goto cleanup;
+			}
+
+			jrn_blknu++;
+			/* Handle circular journal wraparound */
+			if (jrn_blknu > jrnp->jrn_last) {
+				jrn_blknu = jrnp->jrn_first;
+			}
+		}
+
+		/* Write commit block */
+		jrnp->jrn_sequence++;
+		error = ext2_journal_write_commit_blk(jrnp, &jrn_blknu);
+		if (error) {
+			goto cleanup;
+		}
+	}
+
 	return (0);
+cleanup:
+	// TODO
+	return (error);
 }
 
 /*
