@@ -140,7 +140,7 @@ ext2_journal_open_inode(struct mount *mp, struct vnode **vpp,
 	*jrn_sbpp = (struct ext2fs_journal_sb *)
 		malloc(sizeof(struct ext2fs_journal_sb), M_EXT2JSB, M_WAITOK);
 
-	ext2_jsb_from_disk(*jrn_sbpp, jrn_sbp);
+	memcpy(*jrn_sbpp, jrn_sbp, sizeof(struct ext2fs_journal_sb));
 
 	bqrelse(jrn_buf);
 	VOP_UNLOCK(*vpp);
@@ -412,16 +412,29 @@ ext2_journal_recover(struct ext2fs_journal *jrnp)
 static int
 ext2_journal_init(struct ext2fs_journal *jrnp)
 {
-	jrnp->jrn_blocksize = jrnp->jrn_sb->jsb_blocksize;
-	jrnp->jrn_max_blocks = jrnp->jrn_sb->jsb_max_blocks;
-	jrnp->jrn_first = jrnp->jrn_sb->jsb_first_block;
+	struct ext2fs_journal_sb *disk_sb = jrnp->jrn_sb;
+
+	mtx_init(&jrnp->jrn_lock, "ext2jrnl", NULL, MTX_DEF);
+	cv_init(&jrnp->jrn_trans_cv, "ext2jrncv");
+
+	jrnp->jrn_active_trans = NULL;
+	jrnp->jrn_committing_trans = NULL;
+
+	jrnp->jrn_blocksize = be32toh(disk_sb->jsb_blocksize);
+	jrnp->jrn_max_blocks = be32toh(disk_sb->jsb_max_blocks);
+	jrnp->jrn_first = be32toh(disk_sb->jsb_first_block);
 	jrnp->jrn_last = jrnp->jrn_first + jrnp->jrn_max_blocks - 1;
+	jrnp->jrn_free_blocks = jrnp->jrn_max_blocks; /* need to adjust */
+	jrnp->jrn_log_end = jrnp->jrn_log_start; /* TODO update later during recover */
 
 	if (jrnp->jrn_max_blocks < EXT2_JOURNAL_MIN_BLOCKS) {
 		printf("ext2fs: journal number of blocks too little\n");
+		mtx_destroy(&jrnp->jrn_lock);
+		cv_destroy(&jrnp->jrn_trans_cv);
 		return (EINVAL);
 	}
 
+	/* Initialize journal state */
 	if (le16toh(jrnp->jrn_fs->e2fs->e2fs_state) & E2FS_ISCLEAN) {
 		jrnp->jrn_flags |= EXT2_JOURNAL_CLEAN;
 	} else {
@@ -693,23 +706,24 @@ ext2_journal_dirty_metadata(struct ext2fs_journal *jrnp, struct buf *bp)
 	/* Notifies the buffer cache we are doing our own management */
 	bp->b_flags |= B_MANAGED;
 
+
+	/* Adds / moves the buf to the dirty list */
+	bdwrite(bp);
+
 	/*
 	 * Remove the buffer from the freelist to prevent buf_daemon writing
 	 * data to disk or the buf being recycled
 	 */
 	bremfree(bp);
 
-	/* Set buf to be dirty but will not add it back to buffer free list*/
-	bdwrite(bp);
 
 	jbuf = ext2_journal_buf_alloc(jrnp, bp, EXT2_JBUF_METADATA);
 
 	if (bp->b_iodone != NULL) {
+		mtx_unlock(&jrnp->jrn_lock);
 		printf("Assumption of b_iodone being not used is wrong\n");
 		return (EINVAL);
 	}
-
-	bp->b_iodone = ext2_journal_biodone;
 
 	TAILQ_INSERT_TAIL(&trans->jt_metadata_buffers, jbuf, jb_list);
 	trans->jt_metadata_count++;
@@ -860,14 +874,17 @@ ext2_journal_write_commit_blk(struct ext2fs_journal *jrnp,
 	return (0);
 }
 
-
 static int
 ext2_journal_commit_trans(struct ext2fs_journal *jrnp)
 {
 	struct ext2fs_journal_transaction *trans;
 	struct ext2_journal_buf *jbuf;
+	struct buf *sb_buf;
+	struct ext2fs_journal_sb *disk_sb;
+	struct vnode *jrn_vp = jrnp->jrn_vp;
 	uint32_t jrn_blknu;
 	int error = 0;
+	static bool first_commit = true;
 
 	mtx_lock(&jrnp->jrn_lock);
 	trans = jrnp->jrn_committing_trans;
@@ -928,6 +945,30 @@ ext2_journal_commit_trans(struct ext2fs_journal *jrnp)
 		error = ext2_journal_write_commit_blk(jrnp, &jrn_blknu);
 		if (error) {
 			goto cleanup;
+		}
+
+		jrnp->jrn_log_end = jrn_blknu;
+
+		/* Update disk-superblock starting seq number*/
+		if (first_commit) {
+			jrnp->jrn_sb->jsb_sequence_id = jrnp->jrn_sequence;
+			error = bread(jrn_vp, 0, jrnp->jrn_blocksize,
+			    NOCRED, &sb_buf);
+			if (error) {
+				printf(
+				    "ext2_journal_commit_trans: bread failed: %d\n",
+				    error);
+				return (error);
+			}
+			disk_sb = (struct ext2fs_journal_sb *) sb_buf->b_data;
+			/* TODO verify this */
+			disk_sb->jsb_sequence_id = htobe32(jrnp->jrn_sequence);
+
+			error = bwrite(sb_buf);
+			if (error) {
+				printf("ext2_journal_commit_trans: bwrite failed for superblock\n");
+				return (error);
+			}
 		}
 	}
 

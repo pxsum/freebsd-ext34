@@ -28,7 +28,6 @@
 #ifndef _FS_EXT2FS_EXT2_JOURNAL_H_
 #define _FS_EXT2FS_EXT2_JOURNAL_H_
 
-#include <sys/types.h>
 #include <sys/queue.h>
 
 #define	EXT2_JOURNAL_MAGIC 0xc03b3998
