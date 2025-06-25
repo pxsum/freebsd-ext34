@@ -63,6 +63,9 @@
 #include <fs/ext2fs/ext2_dir.h>
 #include <fs/ext2fs/ext2_extern.h>
 #include <fs/ext2fs/fs.h>
+#include <fs/ext2fs/ext2_journal.h>
+
+#include <fs/ext2fs/ext2_journal_debug.h>
 
 SDT_PROVIDER_DECLARE(ext2fs);
 /*
@@ -913,6 +916,8 @@ out:
 int
 ext2_direnter(struct inode *ip, struct vnode *dvp, struct componentname *cnp)
 {
+	struct ext2mount *ump = VFSTOEXT2(dvp->v_mount);
+	struct ext2fs_journal *jrnp = ump->um_journal;
 	struct inode *dp;
 	struct ext2fs_direct_2 newdir;
 	int DIRBLKSIZ = ip->i_e2fs->e2fs_bsize;
@@ -930,6 +935,7 @@ ext2_direnter(struct inode *ip, struct vnode *dvp, struct componentname *cnp)
 	bcopy(cnp->cn_nameptr, newdir.e2d_name, (unsigned)cnp->cn_namelen + 1);
 
 	if (ext2_htree_has_idx(dp)) {
+		EXT2_JERROR("we should not be here\n");
 		error = ext2_htree_add_entry(dvp, &newdir, cnp);
 		if (error) {
 			dp->i_flag &= ~IN_E3INDEX;
@@ -940,7 +946,9 @@ ext2_direnter(struct inode *ip, struct vnode *dvp, struct componentname *cnp)
 
 	if (EXT2_HAS_COMPAT_FEATURE(ip->i_e2fs, EXT2F_COMPAT_DIRHASHINDEX) &&
 	    !ext2_htree_has_idx(dp)) {
-		if ((dp->i_size / DIRBLKSIZ) == 1 &&
+		if (jrnp) {
+			EXT2_JERROR("ext2_direnter: we should not be here 2\n");
+		} else if ((dp->i_size / DIRBLKSIZ) == 1 &&
 		    dp->i_offset == DIRBLKSIZ) {
 			/*
 			 * Making indexed directory when one block is not
@@ -960,9 +968,11 @@ ext2_direnter(struct inode *ip, struct vnode *dvp, struct componentname *cnp)
 		return ext2_add_first_entry(dvp, &newdir, cnp);
 
 	error = ext2_add_entry(dvp, &newdir);
-	if (!error && dp->i_endoff && dp->i_endoff < dp->i_size)
+	if (!error && dp->i_endoff && dp->i_endoff < dp->i_size) {
+		printf("ext2_direnter: ext2_add_entry failed, running truncate\n");
 		error = ext2_truncate(dvp, (off_t)dp->i_endoff, IO_SYNC,
 		    cnp->cn_cred, curthread);
+	}
 	return (error);
 }
 
@@ -973,6 +983,8 @@ ext2_direnter(struct inode *ip, struct vnode *dvp, struct componentname *cnp)
 int
 ext2_add_entry(struct vnode *dvp, struct ext2fs_direct_2 *entry)
 {
+	struct ext2mount *ump = VFSTOEXT2(dvp->v_mount);
+	struct ext2fs_journal *jrnp = ump->um_journal;
 	struct ext2fs_direct_2 *ep, *nep;
 	struct inode *dp;
 	struct buf *bp;
@@ -1049,7 +1061,19 @@ ext2_add_entry(struct vnode *dvp, struct ext2fs_direct_2 *entry)
 	}
 	bcopy((caddr_t)entry, (caddr_t)ep, (u_int)newentrysize);
 	ext2_dirent_csum_set(dp, (struct ext2fs_direct_2 *)bp->b_data);
+	if (jrnp && jrnp->jrn_active_trans != NULL) {
+		EXT2_JPRINTF("journal is on, calling dirty metadata\n");
+		error = ext2_journal_dirty_metadata(jrnp, bp);
+		if (error) {
+			EXT2_JERROR("journal fail dirty meta: %d\n", error);
+		} else {
+			// journaling is working so just return
+			return (error);
+		}
+	}
+	// write to disk for now if journaling fails
 	if (DOINGASYNC(dvp)) {
+		printf("ext2_add_entry: wring to disk asyn, no journal\n");
 		bdwrite(bp);
 		error = 0;
 	} else {
