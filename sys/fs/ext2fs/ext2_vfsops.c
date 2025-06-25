@@ -983,7 +983,7 @@ ext2_mountfs(struct vnode *devvp, struct mount *mp)
 	MNT_IUNLOCK(mp);
 
 	/*
-	 * Check if journal is enabled and present.
+	 * Start recovery process if journaling is enabled.
 	 */
 	if (EXT2_HAS_COMPAT_FEATURE(fs, EXT2F_COMPAT_HASJOURNAL)) {
 		error = ext2_journal_open(mp, &jrnp);

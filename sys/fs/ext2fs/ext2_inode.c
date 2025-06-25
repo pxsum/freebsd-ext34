@@ -51,11 +51,14 @@
 
 #include <fs/ext2fs/fs.h>
 #include <fs/ext2fs/inode.h>
+#include <fs/ext2fs/ext2_journal.h>
 #include <fs/ext2fs/ext2_mount.h>
 #include <fs/ext2fs/ext2fs.h>
 #include <fs/ext2fs/fs.h>
 #include <fs/ext2fs/ext2_extern.h>
 #include <fs/ext2fs/ext2_extattr.h>
+
+#include <fs/ext2fs/ext2_journal_debug.h>
 
 /*
  * Update the access, modified, and inode change times as specified by the
@@ -69,6 +72,8 @@
 int
 ext2_update(struct vnode *vp, int waitfor)
 {
+	struct ext2mount *ump = VFSTOEXT2(vp->v_mount);
+	struct ext2fs_journal *jrnp = ump->um_journal;
 	struct m_ext2fs *fs;
 	struct buf *bp;
 	struct inode *ip;
@@ -95,9 +100,27 @@ ext2_update(struct vnode *vp, int waitfor)
 		brelse(bp);
 		return (error);
 	}
-	if (waitfor && !DOINGASYNC(vp))
+	if (waitfor && !DOINGASYNC(vp)) {
+		if (jrnp && jrnp->jrn_active_trans != NULL) {
+			EXT2_JPRINTF("not async journal is on\n");
+			error = ext2_journal_dirty_metadata(jrnp, bp);
+			if (error) {
+				EXT2_JERROR("journal dirty metadata failed\n");
+			} else {
+				return (0);
+			}
+		}
 		return (bwrite(bp));
-	else {
+	} else {
+		if (jrnp && jrnp->jrn_active_trans != NULL) {
+			EXT2_JPRINTF("async: journal is on\n");
+			error = ext2_journal_dirty_metadata(jrnp, bp);
+			if (error) {
+				EXT2_JERROR("journal dirty metadata failed\n");
+			} else {
+				return (0);
+			}
+		}
 		bdwrite(bp);
 		return (0);
 	}

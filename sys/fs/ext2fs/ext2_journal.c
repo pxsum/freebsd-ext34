@@ -769,6 +769,19 @@ ext2_journal_dirty_metadata(struct ext2fs_journal *jrnp, struct buf *bp)
 
 	/* Note to self: the following code now assumes this is a new buf */
 
+
+	jbuf = ext2_journal_buf_alloc(jrnp, bp, EXT2_JBUF_METADATA);
+
+	EXT2_JPRINTF("new jbuf created\n");
+
+	if (bp->b_iodone != NULL) {
+		mtx_unlock(&jrnp->jrn_lock);
+		EXT2_JERROR("assumption of b_iodone being not used is wrong\n");
+		EXT2_JTRACE_EXIT(EINVAL);
+		return (EINVAL);
+	}
+
+
 	EXT2_JPRINTF("Buffer state: qindex=%d, flags=0x%x\n", bp->b_qindex, bp->b_flags);
 
 	/* Notifies the buffer cache we are doing our own management */
@@ -784,20 +797,13 @@ ext2_journal_dirty_metadata(struct ext2fs_journal *jrnp, struct buf *bp)
 	 */
 	//bremfree(bp);
 
-	jbuf = ext2_journal_buf_alloc(jrnp, bp, EXT2_JBUF_METADATA);
-
-	EXT2_JPRINTF("new jbuf created\n");
-
-	if (bp->b_iodone != NULL) {
-		mtx_unlock(&jrnp->jrn_lock);
-		EXT2_JERROR("assumption of b_iodone being not used is wrong\n");
-		EXT2_JTRACE_EXIT(EINVAL);
-		return (EINVAL);
-	}
+	// will just unlock the buf if MANAGED
 
 	TAILQ_INSERT_TAIL(&trans->jt_metadata_buffers, jbuf, jb_list);
 	trans->jt_metadata_count++;
 	EXT2_JPRINTF("new jbuf added to metadata list\n");
+
+	bqrelse(bp);
 
 	mtx_unlock(&jrnp->jrn_lock);
 	EXT2_JTRACE_EXIT(0);
@@ -973,6 +979,7 @@ ext2_journal_commit_trans(struct ext2fs_journal *jrnp)
 	struct ext2fs_journal_transaction *trans;
 	struct ext2_journal_buf *jbuf;
 	struct buf *sb_buf;
+	struct buf *disk_jbuf;
 	struct ext2fs_journal_sb *disk_sb;
 	struct vnode *jrn_vp = jrnp->jrn_vp;
 	uint32_t jrn_blknu;
@@ -1017,8 +1024,8 @@ ext2_journal_commit_trans(struct ext2fs_journal *jrnp)
 
 		/* Write metadata blocks to journal */
 		TAILQ_FOREACH(jbuf, &trans->jt_metadata_buffers, jb_list) {
-			struct buf *disk_jbuf;
-
+			/* Ensure the buf management did not mess with our buf */
+			KASSERT(jbuf->jb_buf != NULL, "jbuf's real buf was lost");
 			/* Get journal buffer */
 			disk_jbuf = getblk(jrnp->jrn_vp, jrn_blknu,
 			    jrnp->jrn_blocksize, 0, 0, 0);

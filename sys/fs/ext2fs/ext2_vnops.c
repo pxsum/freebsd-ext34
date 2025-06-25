@@ -86,6 +86,7 @@
 #include <fs/ext2fs/ext2_extern.h>
 #include <fs/ext2fs/ext2_dinode.h>
 #include <fs/ext2fs/ext2_dir.h>
+#include <fs/ext2fs/ext2_journal.h>
 #include <fs/ext2fs/ext2_mount.h>
 #include <fs/ext2fs/ext2_extattr.h>
 #include <fs/ext2fs/ext2_extents.h>
@@ -703,7 +704,9 @@ ext2_link(struct vop_link_args *ap)
 	struct vnode *tdvp = ap->a_tdvp;
 	struct componentname *cnp = ap->a_cnp;
 	struct inode *ip;
-	int error;
+	struct ext2mount *ump = VFSTOEXT2(vp->v_mount);
+	struct ext2fs_journal *jrnp = ump->um_journal;
+	int error = 0;
 
 	ip = VTOI(vp);
 	if ((nlink_t)ip->i_nlink >= EXT4_LINK_MAX) {
@@ -714,6 +717,17 @@ ext2_link(struct vop_link_args *ap)
 		error = EPERM;
 		goto out;
 	}
+
+	/* If journaling is on, wrap this file operation in a transaction */
+	if (jrnp) {
+		/* 100 is arbitrary for now, we just need enough journal space*/
+		error = ext2_journal_start(jrnp, 100);
+		if (error) {
+			printf("ext2_link error: journal start\n");
+			return (error);
+		}
+	}
+
 	ip->i_nlink++;
 	ip->i_flag |= IN_CHANGE;
 	error = ext2_update(vp, !DOINGASYNC(vp));
@@ -724,6 +738,12 @@ ext2_link(struct vop_link_args *ap)
 		ip->i_flag |= IN_CHANGE;
 	}
 out:
+	if (jrnp) {
+		error = ext2_journal_stop(jrnp);
+		if (error) {
+			printf("ext2_link: journal stop\n");
+		}
+	}
 	return (error);
 }
 
@@ -2164,6 +2184,8 @@ ext2_ioctl(struct vop_ioctl_args *ap)
 static int
 ext2_write(struct vop_write_args *ap)
 {
+	struct ext2mount *ump;
+	struct ext2fs_journal *jrnp;
 	struct vnode *vp;
 	struct uio *uio;
 	struct inode *ip;
@@ -2179,6 +2201,9 @@ ext2_write(struct vop_write_args *ap)
 
 	seqcount = ioflag >> IO_SEQSHIFT;
 	ip = VTOI(vp);
+
+	ump = VFSTOEXT2(vp->v_mount);
+	jrnp = ump->um_journal;
 
 #ifdef INVARIANTS
 	if (uio->uio_rw != UIO_WRITE)
@@ -2227,7 +2252,19 @@ ext2_write(struct vop_write_args *ap)
 	if ((ioflag & IO_SYNC) && !DOINGASYNC(vp))
 		flags |= IO_SYNC;
 
+	/* for now only start journaling if upating a directory entry */
+	if (jrnp && vp->v_type == VDIR) {
+		error = ext2_journal_start(jrnp, 100);
+		if (error) {
+			printf("ext2_write: journal start fail\n");
+		}
+	}
+
 	for (error = 0; uio->uio_resid > 0;) {
+//forloop:
+		/* if (jrnp) { */
+		/* 	ext2_journal_start(jrnp, 100); */
+		/* } */
 		lbn = lblkno(fs, uio->uio_offset);
 		blkoffset = blkoff(fs, uio->uio_offset);
 		xfersize = fs->e2fs_fsize - blkoffset;
@@ -2244,6 +2281,7 @@ ext2_write(struct vop_write_args *ap)
 			flags |= BA_CLRBUF;
 		else
 			flags &= ~BA_CLRBUF;
+		/* TODO journal balloc */
 		error = ext2_balloc(ip, lbn, blkoffset + xfersize,
 		    ap->a_cred, &bp, flags);
 		if (error != 0)
@@ -2282,6 +2320,16 @@ ext2_write(struct vop_write_args *ap)
 
 		vfs_bio_set_flags(bp, ioflag);
 
+		/* If journaling is on and updating metadata, journal metadata */
+		if (jrnp && vp->v_type == VDIR) {
+			printf("ext2_write: vp is dir, writing to it\n");
+			error = ext2_journal_dirty_metadata(jrnp, bp);
+			if (error) {
+				printf("ext2_write: journal dirty metadata failed: %d\n", error);
+				brelse(bp);
+				break;
+			}
+			/* goto jrnpath; */
 		/*
 		 * If IO_SYNC each buffer is written synchronously.  Otherwise
 		 * if we have a severe page deficiency write the buffer
@@ -2289,7 +2337,7 @@ ext2_write(struct vop_write_args *ap)
 		 * doesn't do it then either do an async write (if O_DIRECT),
 		 * or a delayed write (if not).
 		 */
-		if (ioflag & IO_SYNC) {
+		} else if (ioflag & IO_SYNC) {
 			(void)bwrite(bp);
 		} else if (vm_page_count_severe() ||
 			    buf_dirty_count_severe() ||
@@ -2314,6 +2362,7 @@ ext2_write(struct vop_write_args *ap)
 		if (error || xfersize == 0)
 			break;
 	}
+//jrnpath:
 	/*
 	 * If we successfully wrote any data, and we are not the superuser
 	 * we clear the setuid and setgid bits as a precaution against
@@ -2337,5 +2386,17 @@ ext2_write(struct vop_write_args *ap)
 		if (ioflag & IO_SYNC)
 			error = ext2_update(vp, 1);
 	}
+	/* if (uio->uio_resid > 0) */
+	/* 	goto forloop; */
+	if (jrnp && vp->v_type == VDIR) {
+		if (error) {
+			printf("ext2_write: error before journal stop\n");
+		}
+		error = ext2_journal_stop(jrnp);
+		if (error) {
+			printf("ext2_write: error after journal stop\n");
+		}
+	}
+
 	return (error);
 }
