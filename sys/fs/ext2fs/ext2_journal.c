@@ -40,6 +40,7 @@
 
 #include <fs/ext2fs/ext2_dinode.h>
 #include <fs/ext2fs/ext2_journal.h>
+#include <fs/ext2fs/ext2_journal_debug.h>
 #include <fs/ext2fs/ext2_mount.h>
 #include <fs/ext2fs/ext2fs.h>
 #include <fs/ext2fs/fs.h>
