@@ -891,6 +891,9 @@ ext2_mountfs(struct vnode *devvp, struct mount *mp)
 		if (ronly || (mp->mnt_flag & MNT_FORCE)) {
 			printf(
 "WARNING: Filesystem was not properly dismounted\n");
+		} else if (le32toh(es->e2fs_features_compat) & EXT2F_COMPAT_HASJOURNAL) {
+			printf(
+"WARNING: R/W mount. Filesystem is not clean - attempting journal recovery\n");
 		} else {
 			printf(
 "WARNING: R/W mount denied.  Filesystem is not clean - run fsck\n");
@@ -989,7 +992,6 @@ ext2_mountfs(struct vnode *devvp, struct mount *mp)
 		error = ext2_journal_open(mp, &jrnp);
 		if (error != 0) {
 			printf("ext2fs: failed to open journal. error: %d\n", error);
-			goto out;
 		} else {
 			printf("ext2fs: journal opened successfully\n");
 			printf("ext2fs: journal blocksize: %u\n", jrnp->jrn_blocksize);
