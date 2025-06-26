@@ -2,6 +2,18 @@
  * Debug macros for ext2 journal structures and more useful printing
  */
 
+#include <fs/ext2fs/inode.h>
+
+
+/*
+ * Definitions for the buffer free lists.
+ */
+#define QUEUE_NONE	0	/* on no queue */
+#define QUEUE_EMPTY	1	/* empty buffer headers */
+#define QUEUE_DIRTY	2	/* B_DELWRI buffers */
+#define QUEUE_CLEAN	3	/* non-B_DELWRI buffers */
+#define QUEUE_SENTINEL	4	/* not an queue index, but mark for sentinel */
+
 #if 1
 #define EXT2_JPRINTF(fmt, ...) \
     printf("EXT2J: %s(): " fmt, __func__, ##__VA_ARGS__)
@@ -81,6 +93,27 @@
     } \
 } while (0)
 
+#define EXT2_JPRINT_BUF(bp) do { \
+    if (bp) { \
+        printf("\n=== BUFFER INFO ===\n"); \
+        printf("buf_ptr:       %p\n", (bp)); \
+        printf("b_lblkno:      %ld (logical block)\n", (bp)->b_lblkno); \
+        printf("b_blkno:       %ld (physical block)\n", (bp)->b_blkno); \
+        printf("b_flags:       0x%x\n", (bp)->b_flags); \
+        printf("b_xflags:      0x%x\n", (bp)->b_xflags); \
+        printf("b_vflags:      0x%x\n", (bp)->b_vflags); \
+        printf("b_qindex:      %u\n", (bp)->b_qindex); \
+        printf("b_bcount:      %ld\n", (bp)->b_bcount); \
+        printf("b_bufsize:     %ld\n", (bp)->b_bufsize); \
+        printf("b_vp:          %p\n", (bp)->b_vp); \
+        printf("b_vp:          %p\n", (bp)->b_vp); \
+	printf("b_vp_inum:     %lu\n", (uint64_t) VTOI((bp)->b_vp)->i_number); \
+        printf("==================\n\n"); \
+    } else { \
+        printf("EXT2J: NULL buf pointer\n"); \
+    } \
+} while (0)
+
 #define EXT2_JPRINT_JSB(jsb) do { \
     if (jsb) { \
         printf("\n=== JOURNAL SUPERBLOCK ===\n"); \
@@ -113,8 +146,8 @@
     int count = 0; \
     printf("\n=== %s BUFFER LIST ===\n", name); \
     TAILQ_FOREACH(jbuf, (head), jb_list) { \
-        printf("[%d] jbuf=%p block=%u buf=%p\n", \
-               count++, jbuf, jbuf->jb_blocknr, jbuf->jb_buf); \
+        printf("[%d] jbuf=%p block=%u buf=%p inum=%lu\n", \
+               count++, jbuf, jbuf->jb_blocknr, jbuf->jb_buf, (uint64_t) VTOI(jbuf->jb_buf->b_vp)->i_number); \
     } \
     if (count == 0) { \
         printf("(empty list)\n"); \

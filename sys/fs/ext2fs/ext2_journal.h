@@ -208,6 +208,7 @@ struct ext2fs_journal {
 	struct ext2fs_journal_sb *jrn_sb;
 	struct ext2fs_journal_transaction *jrn_active_trans;
 	struct ext2fs_journal_transaction *jrn_committing_trans;
+	struct ext2fs_journal_transaction *jrn_checkpoint_trans;
 
 	uint32_t	jrn_flags;
 	uint32_t	jrn_blocksize;
