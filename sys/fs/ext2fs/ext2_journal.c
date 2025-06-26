@@ -755,7 +755,6 @@ ext2_journal_dirty_metadata(struct ext2fs_journal *jrnp, struct buf *bp)
 
 	/* Check if buffer already tracked */
 	TAILQ_FOREACH(jbuf, &trans->jt_metadata_buffers, jb_list) {
-		/* Sanity check the bufs are still valid / cached */
 		KASSERT(jbuf->jb_buf != NULL, "NULL jbuf buf ref");
 		if (jbuf->jb_buf == bp) {
 			EXT2_JPRINTF("jbuf metadata found\n");
@@ -766,9 +765,48 @@ ext2_journal_dirty_metadata(struct ext2fs_journal *jrnp, struct buf *bp)
 		}
 	}
 
+	/*
+	 * Since only some parts of the filesystem is journaled, the passed in
+	 * metadata buffer can be in multiple states as of right now.
+	 *
+	 * Eventually, all passed in bufs should not be dirty but this is not
+	 * guaranteed right now.
+	 *
+	 * For now we will have a bunch of checks on the current buf state
+	 * for debugging and sanity checks.
+	 */
+	EXT2_JPRINT_BUF(bp);
 
-	/* Note to self: the following code now assumes this is a new buf */
+	// TODO undirty buffer?
+	if (bp->b_flags & B_DELWRI) {
+		EXT2_JPRINTF("dirty buf\n");
+	}
 
+	switch (bp->b_qindex) {
+	case QUEUE_NONE:
+		EXT2_JPRINTF("buf not on freelist\n");
+		break;
+	case QUEUE_EMPTY:
+		EXT2_JPRINTF("buf on empty list\n");
+		break;
+	case QUEUE_DIRTY:
+		EXT2_JPRINTF("buf on dirty list\n");
+		break;
+	case QUEUE_CLEAN:
+		EXT2_JPRINTF("buf on clean list\n");
+		break;
+	case QUEUE_SENTINEL:
+		EXT2_JPRINTF("buf on sentinel list\n");
+		break;
+	default:
+		EXT2_JPRINTF("buf on invalid index: %u\n", bp->b_qindex);
+		break;
+	}
+
+	if (bp->b_qindex != QUEUE_NONE) {
+		EXT2_JPRINTF("Force remove buf from freelist\n");
+		bremfreef(bp);
+	}
 
 	jbuf = ext2_journal_buf_alloc(jrnp, bp, EXT2_JBUF_METADATA);
 
@@ -781,23 +819,8 @@ ext2_journal_dirty_metadata(struct ext2fs_journal *jrnp, struct buf *bp)
 		return (EINVAL);
 	}
 
-
-	EXT2_JPRINTF("Buffer state: qindex=%d, flags=0x%x\n", bp->b_qindex, bp->b_flags);
-
 	/* Notifies the buffer cache we are doing our own management */
 	bp->b_flags |= B_MANAGED;
-
-	/* Adds / moves the buf to the dirty list of vnode */
-	//bdwrite(bp);
-
-	/*
-	 * Remove the buffer from the freelist to prevent buf_daemon writing
-	 * data to disk or the buf being recycled
-	 * FIXME i dont think bremfree here is needed
-	 */
-	//bremfree(bp);
-
-	// will just unlock the buf if MANAGED
 
 	TAILQ_INSERT_TAIL(&trans->jt_metadata_buffers, jbuf, jb_list);
 	trans->jt_metadata_count++;
@@ -836,10 +859,11 @@ ext2_journal_start(struct ext2fs_journal *jrnp, int nblocks)
 		cv_wait(&jrnp->jrn_trans_cv, &jrnp->jrn_lock);
 	}
 
-	/* Check if we're in commit phase */
+	/* Check if we're in commit phase 
 	while (jrnp->jrn_committing_trans != NULL) {
 		cv_wait(&jrnp->jrn_trans_cv, &jrnp->jrn_lock);
 	}
+	*/
 
 	/* Start new transaction */
 	trans = ext2_journal_transaction_alloc(jrnp);
@@ -984,7 +1008,7 @@ ext2_journal_commit_trans(struct ext2fs_journal *jrnp)
 	struct vnode *jrn_vp = jrnp->jrn_vp;
 	uint32_t jrn_blknu;
 	int error = 0;
-	static bool first_commit = true;
+	static bool first_commit = false;
 
 	EXT2_JTRACE_ENTER();
 
@@ -1087,7 +1111,11 @@ ext2_journal_commit_trans(struct ext2fs_journal *jrnp)
 			}
 			first_commit = false;
 		}
+
 	}
+
+	jrnp->jrn_checkpoint_trans = jrnp->jrn_committing_trans;
+	jrnp->jrn_committing_trans = NULL;
 
 
 	EXT2_JTRACE_EXIT(0);
@@ -1138,5 +1166,6 @@ ext2_journal_stop(struct ext2fs_journal *jrnp)
 		return ext2_journal_commit_trans(jrnp);
 	}
 
+	EXT2_JTRACE_EXIT(0);
 	return (0);
 }
