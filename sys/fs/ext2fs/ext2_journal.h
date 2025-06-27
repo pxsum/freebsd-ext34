@@ -33,7 +33,6 @@
 #define	EXT2_JOURNAL_MAGIC 0xc03b3998
 #define	EXT2_JOURNAL_MIN_BLOCKS 1024
 
-
 #define EXT2_JOURNAL_INCOMPAT_REVOKE		(1)
 #define EXT2_JOURNAL_INCOMPAT_64BIT		(2)
 #define EXT2_JOURNAL_INCOMPAT_ASYNC_COMMIT	(4)
@@ -190,6 +189,9 @@ struct ext2fs_journal_transaction {
 	int jt_data_count;
 	int jt_metadata_count;
 
+	/* List of checkpoint transaction */
+	TAILQ_ENTRY(ext2fs_journal_transaction) jt_checkpoint_entry;
+
 	int jt_pending_data;
 	struct cv jt_iowait_cv;
 };
@@ -202,13 +204,15 @@ struct m_ext2fs;
  * The on-disk superblock is kept in big-endian while all other fields are in
  * host byte order.
  */
+TAILQ_HEAD(ext2_journal_checkpoint_list, ext2fs_journal_transaction);
 struct ext2fs_journal {
 	struct vnode *jrn_vp;
 	struct m_ext2fs *jrn_fs;
 	struct ext2fs_journal_sb *jrn_sb;
 	struct ext2fs_journal_transaction *jrn_active_trans;
 	struct ext2fs_journal_transaction *jrn_committing_trans;
-	struct ext2fs_journal_transaction *jrn_checkpoint_trans;
+	/* List of transactions to checkpoint */
+	struct ext2_journal_checkpoint_list jrn_checkpoint_list;
 
 	uint32_t	jrn_flags;
 	uint32_t	jrn_blocksize;
@@ -221,7 +225,8 @@ struct ext2fs_journal {
 	uint32_t	jrn_sequence;
 
 	struct mtx jrn_lock;
-	struct cv jrn_trans_cv;
+	struct cv jrn_trans_start_cv;
+	struct cv jrn_trans_commit_cv; /* Wait for commit to complete */
 };
 
 int ext2_journal_open(struct mount *mp, struct ext2fs_journal **jrnpp);

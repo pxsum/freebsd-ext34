@@ -441,7 +441,8 @@ ext2_journal_init(struct ext2fs_journal *jrnp)
 	EXT2_JTRACE_ENTER();
 
 	mtx_init(&jrnp->jrn_lock, "ext2jrnl", NULL, MTX_DEF);
-	cv_init(&jrnp->jrn_trans_cv, "ext2jrncv");
+	cv_init(&jrnp->jrn_trans_commit_cv, "ext2jrn_commit_cv");
+	cv_init(&jrnp->jrn_trans_start_cv, "ext2jrn_start_cv");
 
 	jrnp->jrn_active_trans = NULL;
 	jrnp->jrn_committing_trans = NULL;
@@ -456,7 +457,7 @@ ext2_journal_init(struct ext2fs_journal *jrnp)
 	if (jrnp->jrn_max_blocks < EXT2_JOURNAL_MIN_BLOCKS) {
 		EXT2_JERROR("journal number of blocks too little\n");
 		mtx_destroy(&jrnp->jrn_lock);
-		cv_destroy(&jrnp->jrn_trans_cv);
+		cv_destroy(&jrnp->jrn_trans_commit_cv);
 		EXT2_JTRACE_EXIT(EINVAL);
 		return (EINVAL);
 	}
@@ -615,6 +616,8 @@ ext2_journal_buf_free_list(struct ext2_journal_buf_list *head)
 
 	EXT2_JTRACE_ENTER();
 
+	// TODO maybe i should free buf here as well
+
 	TAILQ_FOREACH_SAFE(jbuf, head, jb_list, next) {
 		TAILQ_REMOVE(head, jbuf, jb_list);
 		ext2_journal_buf_free(jbuf);
@@ -752,7 +755,6 @@ ext2_journal_dirty_metadata(struct ext2fs_journal *jrnp, struct buf *bp)
 		return (EINVAL);
 	}
 
-
 	/* Check if buffer already tracked */
 	TAILQ_FOREACH(jbuf, &trans->jt_metadata_buffers, jb_list) {
 		KASSERT(jbuf->jb_buf != NULL, "NULL jbuf buf ref");
@@ -764,6 +766,9 @@ ext2_journal_dirty_metadata(struct ext2fs_journal *jrnp, struct buf *bp)
 			return (0);
 		}
 	}
+
+
+	KASSERT(bp->b_iodone != NULL, "assumption of b_iodone not used is wrong\n");
 
 	/*
 	 * Since only some parts of the filesystem is journaled, the passed in
@@ -812,13 +817,6 @@ ext2_journal_dirty_metadata(struct ext2fs_journal *jrnp, struct buf *bp)
 
 	EXT2_JPRINTF("new jbuf created\n");
 
-	if (bp->b_iodone != NULL) {
-		mtx_unlock(&jrnp->jrn_lock);
-		EXT2_JERROR("assumption of b_iodone being not used is wrong\n");
-		EXT2_JTRACE_EXIT(EINVAL);
-		return (EINVAL);
-	}
-
 	/* Notifies the buffer cache we are doing our own management */
 	bp->b_flags |= B_MANAGED;
 
@@ -826,6 +824,7 @@ ext2_journal_dirty_metadata(struct ext2fs_journal *jrnp, struct buf *bp)
 	trans->jt_metadata_count++;
 	EXT2_JPRINTF("new jbuf added to metadata list\n");
 
+	/* Unlocks the buf */
 	bqrelse(bp);
 
 	mtx_unlock(&jrnp->jrn_lock);
@@ -835,6 +834,10 @@ ext2_journal_dirty_metadata(struct ext2fs_journal *jrnp, struct buf *bp)
 
 /*
  * Starts a transaction or joins the current transaction if a nested operation.
+ *
+ * Journal is kept serial for now so only the same thread that started the
+ * transaction can rejoin the current active transaction. This is to ensure
+ * nested operations work.
  */
 int
 ext2_journal_start(struct ext2fs_journal *jrnp, int nblocks)
@@ -856,14 +859,19 @@ ext2_journal_start(struct ext2fs_journal *jrnp, int nblocks)
 			return (0);
 		}
 
-		cv_wait(&jrnp->jrn_trans_cv, &jrnp->jrn_lock);
+		/* Wait to start a new trans */
+		cv_wait(&jrnp->jrn_trans_start_cv, &jrnp->jrn_lock);
 	}
 
-	/* Check if we're in commit phase 
+	/*
+	 * We wait for the commit to finish since a new transaction might need
+	 * to write to a block that is part of the committing transaction. If
+	 * we naively write to a committing block, we can corrupt the
+	 * transaction. We can do COW to not wait but just wait for now.
+	 */
 	while (jrnp->jrn_committing_trans != NULL) {
-		cv_wait(&jrnp->jrn_trans_cv, &jrnp->jrn_lock);
+		cv_wait(&jrnp->jrn_trans_commit_cv, &jrnp->jrn_lock);
 	}
-	*/
 
 	/* Start new transaction */
 	trans = ext2_journal_transaction_alloc(jrnp);
@@ -998,6 +1006,83 @@ ext2_journal_write_commit_blk(struct ext2fs_journal *jrnp,
 }
 
 static int
+ext2_journal_checkpoint_metadata(struct ext2fs_journal *jrnp,
+    struct ext2fs_journal_transaction *trans)
+{
+	struct ext2_journal_buf *jbuf;
+	struct buf *bp;
+	int error = 0;
+
+	EXT2_JTRACE_ENTER();
+	TAILQ_FOREACH(jbuf, &trans->jt_metadata_buffers, jb_list) {
+		bp = jbuf->jb_buf;
+
+		// TODO confirm buffer management and freeing here
+		bp->b_flags &= ~B_MANAGED;
+		error = bwrite(bp);
+		if (error) {
+			EXT2_JERROR("checkpoing write failed: %d\n", error);
+			brelse(bp);
+			return (error);
+		}
+
+		/* Buf is managed by buffer cache again */
+		jbuf->jb_buf = NULL;
+	}
+
+	EXT2_JTRACE_EXIT(error);
+	return (error);
+}
+
+static int
+ext2_journal_checkpoint_transactions(struct ext2fs_journal *jrnp)
+{
+	struct ext2fs_journal_transaction *trans, *next_trans;
+	int freed_blocks = 0;
+	int error = 0;
+
+	EXT2_JTRACE_ENTER();
+	mtx_lock(&jrnp->jrn_lock);
+
+	TAILQ_FOREACH_SAFE(trans, &jrnp->jrn_checkpoint_list,
+	    jt_checkpoint_entry, next_trans) {
+		if (trans->jt_refcount > 0) {
+			//major error;
+			EXT2_JERROR("transaction is still referenced\n");
+			mtx_unlock(&jrnp->jrn_lock);
+			EXT2_JTRACE_EXIT(EINVAL);
+			return (EINVAL);
+		}
+
+		error = ext2_journal_checkpoint_metadata(jrnp, trans);
+		if (error) {
+			EXT2_JERROR("checkpoint metadata failed\n");
+			mtx_unlock(&jrnp->jrn_lock);
+			EXT2_JTRACE_EXIT(EINVAL);
+			return (EINVAL);
+		}
+
+		TAILQ_REMOVE(&jrnp->jrn_checkpoint_list, trans, jt_checkpoint_entry);
+		freed_blocks += trans->jt_blocks_reserved;
+
+		ext2_journal_transaction_free(trans);
+	}
+
+	if (freed_blocks > 0) {
+		jrnp->jrn_free_blocks *= freed_blocks;
+		/* Update the log start */
+		jrnp->jrn_log_start = jrnp->jrn_log_end;
+
+		// TODO update superblock
+	}
+
+	mtx_unlock(&jrnp->jrn_lock);
+
+	EXT2_JTRACE_EXIT(0);
+	return (0);
+}
+
+static int
 ext2_journal_commit_trans(struct ext2fs_journal *jrnp)
 {
 	struct ext2fs_journal_transaction *trans;
@@ -1008,16 +1093,20 @@ ext2_journal_commit_trans(struct ext2fs_journal *jrnp)
 	struct vnode *jrn_vp = jrnp->jrn_vp;
 	uint32_t jrn_blknu;
 	int error = 0;
-	static bool first_commit = false;
+	static bool first_commit = false; /* false for now */
 
 	EXT2_JTRACE_ENTER();
 
 	mtx_lock(&jrnp->jrn_lock);
+
+	KASSERT(jrnp->jrn_active_trans != NULL,
+	    "ext2_journal_commit_trans: active trans\n");
+
 	trans = jrnp->jrn_committing_trans;
 
 	if (trans == NULL) {
 		mtx_unlock(&jrnp->jrn_lock);
-		EXT2_JERROR("trans to commit it NULL\n");
+		EXT2_JERROR("trans to commit is NULL\n");
 		EXT2_JTRACE_EXIT(EINVAL);
 		return (EINVAL);
 	}
@@ -1036,7 +1125,6 @@ ext2_journal_commit_trans(struct ext2fs_journal *jrnp)
 	EXT2_JPRINTF("All data i/o to wait on done\n");
 
 	trans->jt_state = EXT2_TRANS_COMMIT;
-	mtx_unlock(&jrnp->jrn_lock);
 
 	if (trans->jt_metadata_count > 0) {
 		/* Write descriptor block */
@@ -1048,8 +1136,7 @@ ext2_journal_commit_trans(struct ext2fs_journal *jrnp)
 
 		/* Write metadata blocks to journal */
 		TAILQ_FOREACH(jbuf, &trans->jt_metadata_buffers, jb_list) {
-			/* Ensure the buf management did not mess with our buf */
-			KASSERT(jbuf->jb_buf != NULL, "jbuf's real buf was lost");
+			KASSERT(jbuf->jb_buf != NULL, "NULL jbuf->jb_buf");
 			/* Get journal buffer */
 			disk_jbuf = getblk(jrnp->jrn_vp, jrn_blknu,
 			    jrnp->jrn_blocksize, 0, 0, 0);
@@ -1088,6 +1175,7 @@ ext2_journal_commit_trans(struct ext2fs_journal *jrnp)
 		jrnp->jrn_log_end = jrn_blknu;
 
 		/* Update disk-superblock starting seq number*/
+		// Skip for now
 		if (first_commit) {
 			EXT2_JPRINTF("first commit so updating seq nu\n");
 			jrnp->jrn_sb->jsb_sequence_id = jrnp->jrn_sequence;
@@ -1111,13 +1199,13 @@ ext2_journal_commit_trans(struct ext2fs_journal *jrnp)
 			}
 			first_commit = false;
 		}
-
 	}
 
-	jrnp->jrn_checkpoint_trans = jrnp->jrn_committing_trans;
-	jrnp->jrn_committing_trans = NULL;
+	/* wake up thread waiting on commmit */
+	cv_signal(&jrnp->jrn_trans_commit_cv);
+	mtx_unlock(&jrnp->jrn_lock);
 
-
+	// TODO add commit trans to queue of checkpoint trans
 	EXT2_JTRACE_EXIT(0);
 	return (0);
 cleanup:
@@ -1156,13 +1244,14 @@ ext2_journal_stop(struct ext2fs_journal *jrnp)
 		should_commit = true;
 
 		/* Wake up any threads waiting to start new transaction */
-		cv_broadcast(&jrnp->jrn_trans_cv);
+		// FIXME do not start a transaction if commiting
+		cv_signal(&jrnp->jrn_trans_start_cv);
 	}
 
 	mtx_unlock(&jrnp->jrn_lock);
-
 	if (should_commit) {
 		EXT2_JPRINTF("Journal comitting\n");
+		// TODO maybe just hold lock while calling here
 		return ext2_journal_commit_trans(jrnp);
 	}
 
