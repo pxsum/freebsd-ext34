@@ -106,6 +106,7 @@ ext2_update(struct vnode *vp, int waitfor)
 			error = ext2_journal_dirty_metadata(jrnp, bp);
 			if (error) {
 				EXT2_JERROR("journal dirty metadata failed\n");
+				return (EINVAL);
 			} else {
 				return (0);
 			}
@@ -117,6 +118,7 @@ ext2_update(struct vnode *vp, int waitfor)
 			error = ext2_journal_dirty_metadata(jrnp, bp);
 			if (error) {
 				EXT2_JERROR("journal dirty metadata failed\n");
+				return (EINVAL);
 			} else {
 				return (0);
 			}

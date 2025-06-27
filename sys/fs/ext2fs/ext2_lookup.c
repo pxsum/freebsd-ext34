@@ -969,7 +969,7 @@ ext2_direnter(struct inode *ip, struct vnode *dvp, struct componentname *cnp)
 
 	error = ext2_add_entry(dvp, &newdir);
 	if (!error && dp->i_endoff && dp->i_endoff < dp->i_size) {
-		printf("ext2_direnter: ext2_add_entry failed, running truncate\n");
+		EXT2_JERROR("ext2_add_entry failed, running truncate\n");
 		error = ext2_truncate(dvp, (off_t)dp->i_endoff, IO_SYNC,
 		    cnp->cn_cred, curthread);
 	}
@@ -1066,6 +1066,7 @@ ext2_add_entry(struct vnode *dvp, struct ext2fs_direct_2 *entry)
 		error = ext2_journal_dirty_metadata(jrnp, bp);
 		if (error) {
 			EXT2_JERROR("journal fail dirty meta: %d\n", error);
+			return (error);
 		} else {
 			// journaling is working so just return
 			return (error);
@@ -1073,10 +1074,11 @@ ext2_add_entry(struct vnode *dvp, struct ext2fs_direct_2 *entry)
 	}
 	// write to disk for now if journaling fails
 	if (DOINGASYNC(dvp)) {
-		printf("ext2_add_entry: wring to disk asyn, no journal\n");
+		printf("ext2_add_entry: writing to disk asyn, no journal\n");
 		bdwrite(bp);
 		error = 0;
 	} else {
+		printf("ext2_add_entry: writing to disk sync, no journal\n");
 		error = bwrite(bp);
 	}
 	dp->i_flag |= IN_CHANGE | IN_UPDATE;
