@@ -446,6 +446,7 @@ ext2_journal_init(struct ext2fs_journal *jrnp)
 
 	jrnp->jrn_active_trans = NULL;
 	jrnp->jrn_committing_trans = NULL;
+	TAILQ_INIT(&jrnp->jrn_checkpoint_list);
 
 	jrnp->jrn_blocksize = be32toh(disk_sb->jsb_blocksize);
 	jrnp->jrn_max_blocks = be32toh(disk_sb->jsb_max_blocks);
@@ -1099,6 +1100,7 @@ ext2_journal_commit_trans(struct ext2fs_journal *jrnp)
 
 	mtx_lock(&jrnp->jrn_lock);
 
+	/* Ensure no active transaction while journaling */
 	KASSERT(jrnp->jrn_active_trans != NULL,
 	    "ext2_journal_commit_trans: active trans\n");
 
@@ -1201,11 +1203,14 @@ ext2_journal_commit_trans(struct ext2fs_journal *jrnp)
 		}
 	}
 
-	/* wake up thread waiting on commmit */
+	/* Move commited trans to checkpoing queue */
+	TAILQ_INSERT_TAIL(&jrnp->jrn_checkpoint_list, trans, jt_checkpoint_entry);
+	jrnp->jrn_committing_trans = NULL;
+
+	/* Wake up thread waiting on commmit */
 	cv_signal(&jrnp->jrn_trans_commit_cv);
 	mtx_unlock(&jrnp->jrn_lock);
 
-	// TODO add commit trans to queue of checkpoint trans
 	EXT2_JTRACE_EXIT(0);
 	return (0);
 cleanup:
