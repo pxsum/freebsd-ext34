@@ -594,15 +594,14 @@ ext2_journal_buf_alloc(struct ext2fs_journal *jrnp, struct buf *bp,
 }
 
 /*
- * Free a journal buf type, does not free kernel buf struct.
+ * Free a journal buf type.
  */
 static void
 ext2_journal_buf_free(struct ext2_journal_buf *jbuf)
 {
+	KASSERT(jbuf != NULL, "jbuf to free is NULL\n");
+	KASSERT(jbuf->jb_buf == NULL, "buf of jbuf is NOT NULL\n");
 	EXT2_JTRACE_ENTER();
-
-	if (jbuf == NULL)
-		return;
 
 	free(jbuf, M_EXT2JBUF);
 }
@@ -1017,17 +1016,21 @@ ext2_journal_checkpoint_metadata(struct ext2fs_journal *jrnp,
 	EXT2_JTRACE_ENTER();
 	TAILQ_FOREACH(jbuf, &trans->jt_metadata_buffers, jb_list) {
 		bp = jbuf->jb_buf;
-
+		error = BUF_LOCK(bp,  LK_EXCLUSIVE | LK_NOWAIT, NULL);
+		if (error) {
+			EXT2_JERROR("failed to lock the buf before brelse: %d\n", error);
+			return (error);
+		}
 		// TODO confirm buffer management and freeing here
 		bp->b_flags &= ~B_MANAGED;
 		error = bwrite(bp);
 		if (error) {
-			EXT2_JERROR("checkpoing write failed: %d\n", error);
 			brelse(bp);
+			jbuf->jb_buf = NULL;
+			EXT2_JERROR("checkpoing write failed: %d\n", error);
 			return (error);
 		}
 
-		/* Buf is managed by buffer cache again */
 		jbuf->jb_buf = NULL;
 	}
 
@@ -1035,8 +1038,8 @@ ext2_journal_checkpoint_metadata(struct ext2fs_journal *jrnp,
 	return (error);
 }
 
-static int
-ext2_journal_checkpoint_transactions(struct ext2fs_journal *jrnp)
+int
+ext2_journal_checkpoint_trans(struct ext2fs_journal *jrnp)
 {
 	struct ext2fs_journal_transaction *trans, *next_trans;
 	int freed_blocks = 0;
@@ -1070,7 +1073,7 @@ ext2_journal_checkpoint_transactions(struct ext2fs_journal *jrnp)
 	}
 
 	if (freed_blocks > 0) {
-		jrnp->jrn_free_blocks *= freed_blocks;
+		jrnp->jrn_free_blocks += freed_blocks;
 		/* Update the log start */
 		jrnp->jrn_log_start = jrnp->jrn_log_end;
 
@@ -1261,5 +1264,27 @@ ext2_journal_stop(struct ext2fs_journal *jrnp)
 	}
 
 	EXT2_JTRACE_EXIT(0);
+	return (0);
+}
+
+/*
+ * Force a journal commit.
+ */
+int
+ext2_journal_force_commit(struct ext2fs_journal *jrnp) {
+	struct ext2fs_journal_transaction *trans;
+
+	mtx_lock(&jrnp->jrn_lock);
+
+	/* Wait for active transactions to finish */
+	while ((trans = jrnp->jrn_active_trans) != NULL){
+		cv_wait(&jrnp->jrn_trans_commit_cv, &jrnp->jrn_lock);
+	}
+
+	if ((trans = jrnp->jrn_committing_trans) != NULL) {
+		mtx_unlock(&jrnp->jrn_lock);
+		return ext2_journal_commit_trans(jrnp);
+	}
+	mtx_unlock(&jrnp->jrn_lock);
 	return (0);
 }
