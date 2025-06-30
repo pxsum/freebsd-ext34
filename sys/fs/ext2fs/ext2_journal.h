@@ -238,4 +238,7 @@ int ext2_journal_stop(struct ext2fs_journal *jrnp);
 int ext2_journal_dirty_metadata(struct ext2fs_journal *jrnp, struct buf *bp);
 int ext2_journal_dirty_data(struct ext2fs_journal *jrnp, struct buf *bp);
 
+int ext2_journal_force_commit(struct ext2fs_journal *jrnp);
+int ext2_journal_checkpoint_trans(struct ext2fs_journal *jrnp);
+
 #endif	/* !_FS_EXT2FS_EXT2_JOURNAL_H_ */

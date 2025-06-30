@@ -1050,7 +1050,11 @@ ext2_unmount(struct mount *mp, int mntflags)
 	struct ext2mount *ump;
 	struct m_ext2fs *fs;
 	struct csum *sump;
+	struct ext2fs_journal *jrnp;
 	int error, flags, i, ronly;
+
+	ump = VFSTOEXT2(mp);
+	jrnp = ump->um_journal;
 
 	flags = 0;
 	if (mntflags & MNT_FORCE) {
@@ -1058,9 +1062,20 @@ ext2_unmount(struct mount *mp, int mntflags)
 			return (EINVAL);
 		flags |= FORCECLOSE;
 	}
+
+	/*
+	 * With journaling, wait for current transaction to complete.
+	 * Then, commit transaction.
+	 * Checkpoint journal, ie move data to real location.
+	 * Then call flushfiles which I think should just be a NOP now.
+	 */
+	if (jrnp) {
+		ext2_journal_force_commit(jrnp);
+		ext2_journal_checkpoint_trans(jrnp);
+	}
+
 	if ((error = ext2_flushfiles(mp, flags, curthread)) != 0)
 		return (error);
-	ump = VFSTOEXT2(mp);
 	fs = ump->um_e2fs;
 	ronly = fs->e2fs_ronly;
 	if (ronly == 0 && ext2_cgupdate(ump, MNT_WAIT) == 0) {
