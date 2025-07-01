@@ -146,16 +146,15 @@ struct ext2fs_journal_commit_header {
 	uint32_t jch_timestamp_nsec;	/* commit time in nanosecs */
 };
 
-enum ext2_journal_state {
-	EXT2_JOURNAL_CLEAN,
-	EXT2_JOURNAL_NEEDS_RECOVERY
-};
+/* In-memory journal flags */
+#define EXT2_JOURNAL_CLEAN		(0)
+#define EXT2_JOURNAL_NEEDS_RECOVERY	(1)
+#define EXT2_JOURNAL_ABORTED		(2)
 
 enum ext2_journal_trans_state {
 	EXT2_TRANS_RUNNING,
-	EXT2_TRANS_LOCKED,
-	EXT2_TRANS_FLUSH,
-	EXT2_TRANS_COMMIT
+	EXT2_TRANS_COMMIT,
+	EXT2_TRANS_FLUSH
 };
 
 enum ext2_journal_buf_type {
@@ -214,19 +213,23 @@ struct ext2fs_journal {
 	/* List of transactions to checkpoint */
 	struct ext2_journal_checkpoint_list jrn_checkpoint_list;
 
+	bool		jrn_block_new_trans;
+
 	uint32_t	jrn_flags;
 	uint32_t	jrn_blocksize;
 	uint32_t	jrn_max_blocks;
 	uint32_t	jrn_free_blocks;
-	uint32_t	jrn_first;
-	uint32_t	jrn_last;
-	uint32_t	jrn_log_start;
-	uint32_t	jrn_log_end;
+	uint32_t	jrn_first;	/* static first block of journal */
+	uint32_t	jrn_last;	/* static last block of journal */
+	uint32_t	jrn_log_start;	/* dynamic start of journal */
+	uint32_t	jrn_log_end;	/* dynamic end of journal */
 	uint32_t	jrn_sequence;
 
 	struct mtx jrn_lock;
 	struct cv jrn_trans_start_cv;
 	struct cv jrn_trans_commit_cv; /* Wait for commit to complete */
+	struct cv jrn_trans_block_cv; /* Prevents new transtions from start */
+	struct cv jrn_space_cv; /* Wait for enough journal space */
 };
 
 int ext2_journal_open(struct mount *mp, struct ext2fs_journal **jrnpp);
@@ -238,6 +241,8 @@ int ext2_journal_stop(struct ext2fs_journal *jrnp);
 int ext2_journal_dirty_metadata(struct ext2fs_journal *jrnp, struct buf *bp);
 int ext2_journal_dirty_data(struct ext2fs_journal *jrnp, struct buf *bp);
 
+
+void ext2_journal_block_new_tran(struct ext2fs_journal *jrnp);
 int ext2_journal_force_commit(struct ext2fs_journal *jrnp);
 int ext2_journal_checkpoint_trans(struct ext2fs_journal *jrnp);
 
