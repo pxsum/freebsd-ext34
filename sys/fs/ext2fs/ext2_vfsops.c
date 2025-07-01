@@ -65,6 +65,8 @@
 #include <fs/ext2fs/ext2_extern.h>
 #include <fs/ext2fs/ext2_extents.h>
 #include <fs/ext2fs/ext2_journal.h>
+#include <fs/ext2fs/ext2_journal_debug.h>
+
 
 SDT_PROVIDER_DECLARE(ext2fs);
 /*
@@ -1070,8 +1072,17 @@ ext2_unmount(struct mount *mp, int mntflags)
 	 * Then call flushfiles which I think should just be a NOP now.
 	 */
 	if (jrnp) {
-		ext2_journal_force_commit(jrnp);
-		ext2_journal_checkpoint_trans(jrnp);
+		ext2_journal_block_new_tran(jrnp);
+		error = ext2_journal_force_commit(jrnp);
+		if (error) {
+			EXT2_JERROR("ext2_force_commit error: %d/n", error);
+		}
+		error = ext2_journal_checkpoint_trans(jrnp);
+		if (error) {
+			EXT2_JERROR("ext2_journal_checkpoint error: %d/n", error);
+		}
+
+		ext2_journal_close(jrnp);
 	}
 
 	if ((error = ext2_flushfiles(mp, flags, curthread)) != 0)
