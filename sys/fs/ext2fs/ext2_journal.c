@@ -459,7 +459,14 @@ ext2_journal_init(struct ext2fs_journal *jrnp)
 	jrnp->jrn_first = be32toh(disk_sb->jsb_first_block);
 	jrnp->jrn_last = jrnp->jrn_first + jrnp->jrn_max_blocks - 1;
 	jrnp->jrn_free_blocks = jrnp->jrn_max_blocks; /* need to adjust */
-	jrnp->jrn_log_end = jrnp->jrn_log_start; /* TODO update later during recover */
+
+	jrnp->jrn_log_start = be32toh(disk_sb->jsb_start_block_num);
+	if (jrnp->jrn_log_start == 0) {
+		jrnp->jrn_log_start = jrnp->jrn_first;
+	}
+
+	jrnp->jrn_free_blocks = jrnp->jrn_max_blocks; /* need to adjust */
+	jrnp->jrn_log_end = jrnp->jrn_log_start; /* Start with end at the same place */
 
 	if (jrnp->jrn_max_blocks < EXT2_JOURNAL_MIN_BLOCKS) {
 		EXT2_JERROR("journal number of blocks too little\n");
