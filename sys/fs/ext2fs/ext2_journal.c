@@ -54,6 +54,8 @@ MALLOC_DEFINE(M_EXT2JSB, "ext2fs_journal_sb", "In-memory copy of \
 MALLOC_DEFINE(M_EXT2JTRANS, "ext2fs_journal_trans", "ext2 journal transaction");
 MALLOC_DEFINE(M_EXT2JBUF, "ext2fs_journal_buf", "ext2 journal buffer descriptor");
 
+#define ENABLE_CHECKPOINT_WRITE
+
 /*
  * Verify if the given data block is a valid journal block.
  */
@@ -443,10 +445,14 @@ ext2_journal_init(struct ext2fs_journal *jrnp)
 	mtx_init(&jrnp->jrn_lock, "ext2jrnl", NULL, MTX_DEF);
 	cv_init(&jrnp->jrn_trans_commit_cv, "ext2jrn_commit_cv");
 	cv_init(&jrnp->jrn_trans_start_cv, "ext2jrn_start_cv");
+	cv_init(&jrnp->jrn_trans_block_cv, "ext2jrn_block_cv");
+	cv_init(&jrnp->jrn_space_cv, "ext2jrn_space_cv");
 
 	jrnp->jrn_active_trans = NULL;
 	jrnp->jrn_committing_trans = NULL;
 	TAILQ_INIT(&jrnp->jrn_checkpoint_list);
+
+	jrnp->jrn_block_new_trans = false;
 
 	jrnp->jrn_blocksize = be32toh(disk_sb->jsb_blocksize);
 	jrnp->jrn_max_blocks = be32toh(disk_sb->jsb_max_blocks);
@@ -459,6 +465,9 @@ ext2_journal_init(struct ext2fs_journal *jrnp)
 		EXT2_JERROR("journal number of blocks too little\n");
 		mtx_destroy(&jrnp->jrn_lock);
 		cv_destroy(&jrnp->jrn_trans_commit_cv);
+		cv_destroy(&jrnp->jrn_trans_start_cv);
+		cv_destroy(&jrnp->jrn_trans_block_cv);
+		cv_destroy(&jrnp->jrn_space_cv);
 		EXT2_JTRACE_EXIT(EINVAL);
 		return (EINVAL);
 	}
@@ -480,14 +489,29 @@ ext2_journal_init(struct ext2fs_journal *jrnp)
 int
 ext2_journal_close(struct ext2fs_journal *jrnp)
 {
+	KASSERT(jrnp->jrn_active_trans == NULL,
+	    "journal close while active trans/n");
+	KASSERT(jrnp->jrn_committing_trans == NULL,
+	    "journal close while comitting trans/n");
+	KASSERT(jrnp->jrn_checkpoint_list == NULL,
+	    "journal close while checkpoint trans/n");
+
 	if (jrnp == NULL)
 		return (0);
 
-	if (jrnp->jrn_vp != NULL)
+	if (jrnp->jrn_vp != NULL) {
+		VOP_LOCK(jrnp->jrn_vp, LK_EXCLUSIVE);
 		vput(jrnp->jrn_vp);
+	}
 
 	if (jrnp->jrn_sb != NULL)
 		free(jrnp->jrn_sb, M_EXT2JSB);
+
+	mtx_destroy(&jrnp->jrn_lock);
+	cv_destroy(&jrnp->jrn_trans_commit_cv);
+	cv_destroy(&jrnp->jrn_trans_start_cv);
+	cv_destroy(&jrnp->jrn_trans_block_cv);
+	cv_destroy(&jrnp->jrn_space_cv);
 
 	free(jrnp, M_EXT2JOURNAL);
 	return (0);
@@ -516,8 +540,7 @@ ext2_journal_open(struct mount *mp, struct ext2fs_journal **jrnpp)
                               &((*jrnpp)->jrn_sb));
 	if (error != 0) {
 		EXT2_JERROR("failed to open journal inode. error: %d\n", error);
-		ext2_journal_close(*jrnpp);
-		*jrnpp = NULL;
+		goto fail_sb;
 		EXT2_JTRACE_EXIT(error);
 		return (error);
 	}
@@ -526,8 +549,7 @@ ext2_journal_open(struct mount *mp, struct ext2fs_journal **jrnpp)
 	error = ext2_journal_init(*jrnpp);
 	if (error != 0) {
 		EXT2_JERROR("failed initialize journal. error: %d\n", error);
-		ext2_journal_close(*jrnpp);
-		*jrnpp = NULL;
+		goto fail_init;
 		EXT2_JTRACE_EXIT(error);
 		return (error);
 	}
@@ -535,6 +557,16 @@ ext2_journal_open(struct mount *mp, struct ext2fs_journal **jrnpp)
 
 	EXT2_JTRACE_EXIT(0);
 	return (0);
+
+fail_init:
+	vput((*jrnpp)->jrn_vp);
+	(*jrnpp)->jrn_vp = NULL;
+	free((*jrnpp)->jrn_sb, M_EXT2JSB);
+fail_sb:
+	free(*jrnpp, M_EXT2JOURNAL);
+	*jrnpp = NULL;
+
+	return (error);
 }
 
 
@@ -1021,8 +1053,8 @@ ext2_journal_checkpoint_metadata(struct ext2fs_journal *jrnp,
 			EXT2_JERROR("failed to lock the buf before brelse: %d\n", error);
 			return (error);
 		}
-		// TODO confirm buffer management and freeing here
 		bp->b_flags &= ~B_MANAGED;
+#if defined(ENABLE_CHECKPOINT_WRITE)
 		error = bwrite(bp);
 		if (error) {
 			brelse(bp);
@@ -1030,6 +1062,10 @@ ext2_journal_checkpoint_metadata(struct ext2fs_journal *jrnp,
 			EXT2_JERROR("checkpoing write failed: %d\n", error);
 			return (error);
 		}
+#else
+		bp->b_flags |= B_INVAL;
+		brelse(bp);
+#endif
 
 		jbuf->jb_buf = NULL;
 	}
@@ -1097,13 +1133,13 @@ ext2_journal_commit_trans(struct ext2fs_journal *jrnp)
 	struct vnode *jrn_vp = jrnp->jrn_vp;
 	uint32_t jrn_blknu;
 	int error = 0;
-	static bool first_commit = false; /* false for now */
+	static bool first_commit = true;
 
 	EXT2_JTRACE_ENTER();
 
 	mtx_lock(&jrnp->jrn_lock);
 
-	/* Ensure no active transaction while journaling */
+	/* Ensure no active transaction while committing */
 	KASSERT(jrnp->jrn_active_trans != NULL,
 	    "ext2_journal_commit_trans: active trans\n");
 
@@ -1219,6 +1255,14 @@ ext2_journal_commit_trans(struct ext2fs_journal *jrnp)
 cleanup:
 	// TODO
 	EXT2_JTRACE_EXIT(0);
+	EXT2_JERROR("fatal journal commit error: %d\n", error);
+	jrnp->jrn_flags |= EXT2_JOURNAL_ABORTED;
+	jrnp->jrn_committing_trans = NULL;
+	ext2_journal_transaction_free(trans);
+
+	cv_signal(&jrnp->jrn_trans_commit_cv);
+	mtx_unlock(&jrnp->jrn_lock);
+	EXT2_JTRACE_EXIT(error);
 	return (error);
 }
 
@@ -1277,14 +1321,26 @@ ext2_journal_force_commit(struct ext2fs_journal *jrnp) {
 	mtx_lock(&jrnp->jrn_lock);
 
 	/* Wait for active transactions to finish */
-	while ((trans = jrnp->jrn_active_trans) != NULL){
+	while ((trans = jrnp->jrn_active_trans) != NULL) {
 		cv_wait(&jrnp->jrn_trans_commit_cv, &jrnp->jrn_lock);
 	}
 
-	if ((trans = jrnp->jrn_committing_trans) != NULL) {
+	/* Commit the transaction that just finished */
+	if (jrnp->jrn_committing_trans == NULL) {
+		jrnp->jrn_committing_trans = trans;
 		mtx_unlock(&jrnp->jrn_lock);
 		return ext2_journal_commit_trans(jrnp);
 	}
 	mtx_unlock(&jrnp->jrn_lock);
 	return (0);
+}
+
+/*
+ * Stop new transactions from starting.
+ */
+void
+ext2_journal_block_new_tran(struct ext2fs_journal *jrnp) {
+	mtx_lock(&jrnp->jrn_lock);
+	jrnp->jrn_block_new_trans = true;
+	mtx_unlock(&jrnp->jrn_lock);
 }
