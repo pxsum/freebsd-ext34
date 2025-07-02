@@ -290,7 +290,7 @@ ext2_journal_walk_trans(struct ext2fs_journal *jrnp, uint32_t trans_start,
 		return (EINVAL);
 	}
 	/* Read and print descriptor block data */
-	blk_count = ext2_journal_parse_desc_blk(jrn_buf, jrnp->jrn_blocksize, jrnp);
+	blk_count = ext2_journal_parse_desc_blk(jrn_buf->b_data, jrnp->jrn_blocksize, jrnp);
 	brelse(jrn_buf);
 
 	if (blk_count < 0) {
