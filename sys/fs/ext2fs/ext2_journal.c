@@ -216,13 +216,11 @@ ext2_journal_parse_desc_blk(void *data, uint32_t blk_size,
 		uint16_t flags = be16toh(tag->jdt_flags);
 		uint16_t checksum = be16toh(tag->jdt_checksum);
 		uint32_t blocknum_low = be32toh(tag->jdt_blocknum_low);
-		uint32_t blocknum_high = be32toh(tag->jdt_blocknum_high);
 
 		printf("desc blk: tag num: %d\n", tag_count);
 		printf("desc blk: tag flag: %u\n", flags);
 		printf("desc blk: tag checksum: %u\n", checksum);
 		printf("desc blk: blocknum low: %u\n", blocknum_low);
-		printf("desc blk: blocknum high: %u\n", blocknum_high);
 
 		if (flags & EXT2_JOURNAL_TAG_LAST_ENTRY) {
 			found_last_tag = true;

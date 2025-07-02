@@ -109,7 +109,6 @@ struct ext2fs_journal_desc_tag {
 	uint32_t  jdt_blocknum_low;	/* low bits of block num*/
 	uint16_t  jdt_checksum;		/* checksum */
 	uint16_t  jdt_flags;		/* flags for block */
-	uint32_t  jdt_blocknum_high;	/* high bits of blocknum for 64-bit fs*/
 };
 
 struct ext2fs_journal_desc_tail {
