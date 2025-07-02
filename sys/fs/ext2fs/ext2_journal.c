@@ -163,24 +163,22 @@ ext2_journal_block_type(void *data) {
 	return (be32toh(jrn_bhr->jbh_blocktype));
 }
 
+/*
+ * Calculate the size of the tags.
+ *
+ * I believe the sizes are:
+ *
+ * 8-bytes for 32-bit journal with same UUID.
+ * 12-bytes for 64-bit journal wit same UUID.
+ * 24-bytes for 32-bit with same UUID.
+ * 28-bytes for 64-bit journal when same UUID is not set.
+ *
+ * Assume 8-bytes for now.
+ */
 static uint32_t
 ext2_journal_tag_size(struct ext2fs_journal_sb *jsbp)
 {
-	uint32_t size = 0;
-
-	/* Add checksum size if checksum v2 feature is enabled */
-	if (jsbp->jsb_feature_incompat & EXT2_JOURNAL_INCOMPAT_CHECKSUM_V2) {
-	    size += sizeof(uint16_t);
-	}
-
-	/* Add appropriate tag size based on 64-bit feature */
-	if (jsbp->jsb_feature_incompat & EXT2_JOURNAL_INCOMPAT_64BIT) {
-	    size += 16;  // 64-bit tag size includes high block number
-	} else {
-	    size += 12;  // 32-bit tag size
-	}
-
-	return size;
+	return 8;
 }
 
 static int
@@ -454,6 +452,7 @@ ext2_journal_init(struct ext2fs_journal *jrnp)
 
 	jrnp->jrn_block_new_trans = false;
 
+	jrnp->jrn_sequence = be32toh(disk_sb->jsb_sequence_id);
 	jrnp->jrn_blocksize = be32toh(disk_sb->jsb_blocksize);
 	jrnp->jrn_max_blocks = be32toh(disk_sb->jsb_max_blocks);
 	jrnp->jrn_first = be32toh(disk_sb->jsb_first_block);
@@ -983,6 +982,7 @@ ext2_journal_write_desc_blk(struct ext2fs_journal *jrnp, uint32_t *blknu)
 	desc_data = desc_buf->b_data;
 	memset(desc_data, 0, jrnp->jrn_blocksize);
 
+	/* Write header in big-endian format */
 	header = (struct ext2fs_journal_block_header *) desc_data;
 	header->jbh_magic = htobe32(EXT2_JOURNAL_MAGIC);
 	header->jbh_blocktype = htobe32(EXT2_JOURNAL_DESCRIPTOR_BLOCK);
@@ -990,16 +990,27 @@ ext2_journal_write_desc_blk(struct ext2fs_journal *jrnp, uint32_t *blknu)
 
 	/* Write tags for each metadata buf */
 	TAILQ_FOREACH(jbuf, &trans->jt_metadata_buffers, jb_list) {
-		// TODO ensure metadata fits in one desc blk, or split into mult
-		tag = (struct ext2fs_journal_desc_tag *)(desc_data +
-		    tag_offset);
+		uint16_t current_flags = EXT2_JOURNAL_TAG_SAME_UUID;
+		/* Ensure we don't overflow the block */
+		if (tag_offset + tag_size > jrnp->jrn_blocksize) {
+			EXT2_JERROR("Descriptor block overflow\n");
+			brelse(desc_buf);
+			EXT2_JTRACE_EXIT(EINVAL);
+			return (EINVAL);
+		}
+
+		tag = (struct ext2fs_journal_desc_tag *)(desc_data + tag_offset);
 
 		/* Check if this is the last tag */
 		last_tag = (TAILQ_NEXT(jbuf, jb_list) == NULL);
+		if (last_tag) {
+			current_flags |= EXT2_JOURNAL_TAG_LAST_ENTRY;
+		}
 
+
+		/* Write tag fields in big-endian */
 		tag->jdt_blocknum_low = htobe32(jbuf->jb_blocknr);
-		tag->jdt_flags = htobe16(
-		    last_tag ? EXT2_JOURNAL_TAG_LAST_ENTRY : 0);
+		tag->jdt_flags = htobe16(current_flags);
 		tag->jdt_checksum = 0; /* TODO: implement checksums */
 
 		tag_offset += tag_size;
@@ -1196,10 +1207,10 @@ ext2_journal_commit_trans(struct ext2fs_journal *jrnp)
 	EXT2_JPRINT_TRANS(trans);
 	EXT2_JPRINT_TRANS_BUFFERS(trans);
 
-	/* Allocate journal blocks */
+	/* Get starting journal block number */
 	jrn_blknu = jrnp->jrn_log_end;
 
-	/* Wait for all data i/o to finish first in ordered mode */
+	/* Wait for all data I/O to finish first in ordered mode */
 	while (trans->jt_pending_data > 0) {
 		cv_wait(&trans->jt_iowait_cv, &jrnp->jrn_lock);
 	}
@@ -1208,49 +1219,32 @@ ext2_journal_commit_trans(struct ext2fs_journal *jrnp)
 
 	trans->jt_state = EXT2_TRANS_COMMIT;
 
+	mtx_unlock(&jrnp->jrn_lock);
+
 	if (trans->jt_metadata_count > 0) {
 		/* Write descriptor block */
 		error = ext2_journal_write_desc_blk(jrnp, &jrn_blknu);
 		if (error) {
 			EXT2_JPRINTF("write desc blk failed\n");
+			EXT2_JERROR("Failed to write descriptor block: %d\n",
+			    error);
 			goto cleanup;
 		}
 
 		/* Write metadata blocks to journal */
-		TAILQ_FOREACH(jbuf, &trans->jt_metadata_buffers, jb_list) {
-			KASSERT(jbuf->jb_buf != NULL, "NULL jbuf->jb_buf");
-			/* Get journal buffer */
-			disk_jbuf = getblk(jrnp->jrn_vp, jrn_blknu,
-			    jrnp->jrn_blocksize, 0, 0, 0);
-			if (disk_jbuf == NULL) {
-				EXT2_JPRINTF("getblk failed\n");
-				goto cleanup;
-			}
-
-			/* Copy metadata to on-disk journal buf */
-			memcpy(disk_jbuf->b_data, jbuf->jb_buf->b_data,
-			    jrnp->jrn_blocksize);
-
-			/* Write to journal, sync for now */
-			error = bwrite(disk_jbuf);
-			if (error) {
-				EXT2_JPRINTF("bwrite failed\n");
-				brelse(disk_jbuf);
-				goto cleanup;
-			}
-
-			jrn_blknu++;
-			/* Handle circular journal wraparound */
-			if (jrn_blknu > jrnp->jrn_last) {
-				jrn_blknu = jrnp->jrn_first;
-			}
+		error = ext2_journal_write_metadata_blcks(jrnp, trans,
+		    &jrn_blknu);
+		if (error) {
+			EXT2_JERROR("Failed to write metadata blocks: %d\n",
+			    error);
+			goto cleanup;
 		}
 
 		/* Write commit block */
-		jrnp->jrn_sequence++;
 		error = ext2_journal_write_commit_blk(jrnp, &jrn_blknu);
 		if (error) {
-			EXT2_JPRINTF("write commit blk failed\n");
+			EXT2_JERROR("Failed to write commit block: %d\n",
+			    error);
 			goto cleanup;
 		}
 
@@ -1281,10 +1275,25 @@ ext2_journal_commit_trans(struct ext2fs_journal *jrnp)
 			}
 			first_commit = false;
 		}
+
+		mtx_lock(&jrnp->jrn_lock);
+
+		/* Update journal state */
+		jrnp->jrn_sequence++;
+		jrnp->jrn_log_end = jrn_blknu;
+
+		EXT2_JPRINTF("Commit completed successfully at block: %u\n",
+		    jrn_blknu);
+	} else {
+		/* No metadata to commit, just update state */
+		mtx_lock(&jrnp->jrn_lock);
 	}
 
 	/* Move commited trans to checkpoing queue */
 	TAILQ_INSERT_TAIL(&jrnp->jrn_checkpoint_list, trans, jt_checkpoint_entry);
+	/* Move committed transaction to checkpoint queue */
+	TAILQ_INSERT_TAIL(&jrnp->jrn_checkpoint_list, trans,
+	    jt_checkpoint_entry);
 	jrnp->jrn_committing_trans = NULL;
 
 	/* Wake up thread waiting on commmit */
@@ -1294,15 +1303,16 @@ ext2_journal_commit_trans(struct ext2fs_journal *jrnp)
 	EXT2_JTRACE_EXIT(0);
 	return (0);
 cleanup:
-	// TODO
-	EXT2_JTRACE_EXIT(0);
 	EXT2_JERROR("fatal journal commit error: %d\n", error);
+	mtx_lock(&jrnp->jrn_lock);
 	jrnp->jrn_flags |= EXT2_JOURNAL_ABORTED;
 	jrnp->jrn_committing_trans = NULL;
-	ext2_journal_transaction_free(trans);
 
 	cv_signal(&jrnp->jrn_trans_commit_cv);
 	mtx_unlock(&jrnp->jrn_lock);
+
+	ext2_journal_transaction_free(trans);
+
 	EXT2_JTRACE_EXIT(error);
 	return (error);
 }
