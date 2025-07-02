@@ -883,15 +883,24 @@ ext2_journal_start(struct ext2fs_journal *jrnp, int nblocks)
 {
 	struct ext2fs_journal_transaction *trans;
 	struct thread *td = curthread;
+	int required_blocks;
+
+	/* We need blocks for normal metadata/ data blocks and descriptor and commit block for journal*/
+	required_blocks = nblocks + 2;
 
 	EXT2_JTRACE_ENTER();
 
 	mtx_lock(&jrnp->jrn_lock);
 	while ((trans = jrnp->jrn_active_trans) != NULL) {
 		/* Same thread so must be a nested file operation */
+		/*
+		 * In a nested operation, assume the initial reservation was
+		 * enough.
+		 */
 		if (trans->jt_owner == td) {
 			trans->jt_refcount++;
 			trans->jt_blocks_reserved += nblocks;
+			jrnp->jrn_free_blocks -= nblocks;
 			mtx_unlock(&jrnp->jrn_lock);
 			EXT2_JPRINTF("journal start joined nested operation\n");
 			EXT2_JTRACE_EXIT(0);
@@ -912,6 +921,21 @@ ext2_journal_start(struct ext2fs_journal *jrnp, int nblocks)
 		cv_wait(&jrnp->jrn_trans_commit_cv, &jrnp->jrn_lock);
 	}
 
+	while (required_blocks > jrnp->jrn_free_blocks) {
+		// we assume here there are commiting transactions / transactions to checkpoint to free journal space
+		cv_wait(&jrnp->jrn_space_cv, &jrnp->jrn_lock);
+	}
+
+	/*
+	 * Check if new transactions are prevented from starting.
+	 *
+	 * The idea is to prevent new transaction from starting while
+	 * checkpointing for now.
+	 */
+	while (jrnp->jrn_block_new_trans) {
+		cv_wait(&jrnp->jrn_trans_block_cv, &jrnp->jrn_lock);
+	}
+
 	/* Start new transaction */
 	trans = ext2_journal_transaction_alloc(jrnp);
 	trans->jt_journal = jrnp;
@@ -920,6 +944,8 @@ ext2_journal_start(struct ext2fs_journal *jrnp, int nblocks)
 	trans->jt_owner = td;
 	trans->jt_blocks_reserved = nblocks;
 	trans->jt_pending_data = 0;
+
+	jrnp->jrn_free_blocks -= required_blocks;
 
 	EXT2_JPRINTF("new transaction started\n");
 
@@ -1120,9 +1146,17 @@ ext2_journal_checkpoint_trans(struct ext2fs_journal *jrnp)
 		/* Update the log start */
 		jrnp->jrn_log_start = jrnp->jrn_log_end;
 
+		/* Wake up threads waiting for more journal space */
+		cv_signal(&jrnp->jrn_space_cv);
+
 		// TODO update superblock
 	}
 
+	KASSERT(jrnp->jrn_block_new_trans == true,
+	    "new transactions were allowed to start while checkpointing\n");
+
+	jrnp->jrn_block_new_trans = false;
+	cv_signal(&jrnp->jrn_trans_block_cv);
 	mtx_unlock(&jrnp->jrn_lock);
 
 	EXT2_JTRACE_EXIT(0);
