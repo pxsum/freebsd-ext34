@@ -1212,6 +1212,49 @@ ext2_journal_write_commit_blk(struct ext2fs_journal *jrnp,
 }
 
 static int
+ext2_journal_write_metadata_blcks(struct ext2fs_journal *jrnp,
+    struct ext2fs_journal_transaction *trans, uint32_t *blknu)
+{
+	struct ext2_journal_buf *jbuf;
+	struct buf *disk_jbuf;
+	int error = 0;
+
+	EXT2_JTRACE_ENTER();
+
+	/* Write metadata blocks to journal */
+	TAILQ_FOREACH(jbuf, &trans->jt_metadata_buffers, jb_list) {
+		KASSERT(jbuf->jb_buf != NULL, "NULL jbuf->jb_buf");
+		/* Get fresh journal buffer */
+		disk_jbuf = getblk(jrnp->jrn_vp, *blknu, jrnp->jrn_blocksize,
+		    0, 0, 0);
+		if (disk_jbuf == NULL) {
+			EXT2_JERROR("getblk failed for metadata block\n");
+			error = ENOMEM;
+			break;
+		}
+
+		/* Copy metadata to journal buffer */
+		memcpy(disk_jbuf->b_data, jbuf->jb_buf->b_data, jrnp->jrn_blocksize);
+
+		error = bwrite(disk_jbuf);
+		if (error) {
+			EXT2_JERROR("bwrite failed for metadata: %d\n", error);
+			break;
+		}
+
+		/* Move to next journal block */
+		(*blknu)++;
+		if (*blknu > jrnp->jrn_last) {
+			*blknu = jrnp->jrn_first;
+		}
+	}
+
+	EXT2_JTRACE_EXIT(error);
+	return (error);
+}
+
+
+static int
 ext2_journal_checkpoint_metadata(struct ext2fs_journal *jrnp,
     struct ext2fs_journal_transaction *trans)
 {
