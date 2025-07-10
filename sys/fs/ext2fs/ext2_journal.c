@@ -64,6 +64,8 @@ static void ext2_journal_revoke_table_clear(
     struct ext2fs_journal_revoke_table *table);
 static void ext2_journal_revoke_list_clear(
     struct ext2fs_journal_revoke_list *list);
+static int ext2_journal_write_revoke_block(struct ext2fs_journal *jrnp,
+    struct ext2fs_journal_revoke_list *revoke_list, uint32_t *blknu);
 static int ext2_journal_process_revoke_block(struct ext2fs_journal *jrnp,
     void *data, uint32_t sequence);
 static bool
@@ -1414,6 +1416,15 @@ ext2_journal_commit_trans(struct ext2fs_journal *jrnp)
 		    &jrn_blknu);
 		if (error) {
 			EXT2_JERROR("Failed to write metadata blocks: %d\n",
+			    error);
+			goto cleanup;
+		}
+
+		/* Write revoke block */
+		error = ext2_journal_write_revoke_block(jrnp,
+		    &trans->jt_revoke_list, &jrn_blknu);
+		if (error) {
+			EXT2_JERROR("Failed to write revoke block: %d\n",
 			    error);
 			goto cleanup;
 		}
