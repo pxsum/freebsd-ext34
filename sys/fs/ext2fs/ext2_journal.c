@@ -60,11 +60,14 @@ static struct ext2fs_journal_revoke_table *ext2_journal_revoke_table_create(
     void);
 static void ext2_journal_revoke_table_destroy(
     struct ext2fs_journal_revoke_table *table);
-static void
-ext2_journal_revoke_list_clear(struct ext2fs_journal_revoke_list *list);
+static void ext2_journal_revoke_table_clear(
+    struct ext2fs_journal_revoke_table *table);
+static void ext2_journal_revoke_list_clear(
+    struct ext2fs_journal_revoke_list *list);
 static int ext2_journal_process_revoke_block(struct ext2fs_journal *jrnp,
     void *data, uint32_t sequence);
-static bool ext2_journal_is_block_revoked(struct ext2fs_journal_revoke_table *table,
+static bool
+ext2_journal_is_block_revoked(struct ext2fs_journal_revoke_table *table,
     uint32_t blocknr, uint32_t sequence);
 static int ext2_journal_walk_trans(struct ext2fs_journal *jrnp,
     enum ext2fs_journal_pass_type pass, uint32_t trans_start,
@@ -1266,18 +1269,24 @@ ext2_journal_checkpoint_metadata(struct ext2fs_journal *jrnp,
 		}
 		bp->b_flags &= ~B_MANAGED;
 #if defined(ENABLE_CHECKPOINT_WRITE)
-		error = bwrite(bp);
-		if (error) {
+		/* Write buf to real disk if not revoked */
+		if (!jbuf->jb_revoked) {
+			error = bwrite(bp);
+			if (error) {
+				brelse(bp);
+				jbuf->jb_buf = NULL;
+				EXT2_JERROR("checkpoing write failed: %d\n",
+				    error);
+				return (error);
+			}
+		} else {
+			bp->b_flags |= B_INVAL;
 			brelse(bp);
-			jbuf->jb_buf = NULL;
-			EXT2_JERROR("checkpoing write failed: %d\n", error);
-			return (error);
 		}
 #else
 		bp->b_flags |= B_INVAL;
 		brelse(bp);
 #endif
-
 		jbuf->jb_buf = NULL;
 	}
 
@@ -1332,6 +1341,8 @@ ext2_journal_checkpoint_trans(struct ext2fs_journal *jrnp)
 
 	KASSERT(jrnp->jrn_block_new_trans == true,
 	    "new transactions were allowed to start while checkpointing\n");
+
+	ext2_journal_revoke_table_clear(jrnp->jrn_revoke_table);
 
 	jrnp->jrn_block_new_trans = false;
 	cv_signal(&jrnp->jrn_trans_block_cv);
