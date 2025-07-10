@@ -53,8 +53,15 @@ MALLOC_DEFINE(M_EXT2JSB, "ext2fs_journal_sb", "In-memory copy of \
 	journal superblock");
 MALLOC_DEFINE(M_EXT2JTRANS, "ext2fs_journal_trans", "ext2 journal transaction");
 MALLOC_DEFINE(M_EXT2JBUF, "ext2fs_journal_buf", "ext2 journal buffer descriptor");
+MALLOC_DEFINE(M_EXT2REVOKE, "ext2fs_revoke", "ext2 journal revoke records");
 
 #define ENABLE_CHECKPOINT_WRITE
+static struct ext2fs_journal_revoke_table *ext2_journal_revoke_table_create(
+    void);
+static void ext2_journal_revoke_table_destroy(
+    struct ext2fs_journal_revoke_table *table);
+static void
+ext2_journal_revoke_list_clear(struct ext2fs_journal_revoke_list *list);
 
 /*
  * Verify if the given data block is a valid journal block.
@@ -579,6 +586,7 @@ ext2_journal_init(struct ext2fs_journal *jrnp)
 	jrnp->jrn_active_trans = NULL;
 	jrnp->jrn_committing_trans = NULL;
 	TAILQ_INIT(&jrnp->jrn_checkpoint_list);
+	jrnp->jrn_revoke_table = ext2_journal_revoke_table_create();
 
 	jrnp->jrn_block_new_trans = false;
 
@@ -642,6 +650,9 @@ ext2_journal_close(struct ext2fs_journal *jrnp)
 
 	if (jrnp->jrn_sb != NULL)
 		free(jrnp->jrn_sb, M_EXT2JSB);
+
+	if (jrnp->jrn_revoke_table != NULL)
+		ext2_journal_revoke_table_destroy(jrnp->jrn_revoke_table);
 
 	mtx_destroy(&jrnp->jrn_lock);
 	cv_destroy(&jrnp->jrn_trans_commit_cv);
@@ -715,7 +726,7 @@ fail_sb:
 static void
 ext2_journal_biodone(struct buf *bp)
 {
-	struct ext2_journal_buf *jbuf;
+	struct ext2fs_journal_buf *jbuf;
 	struct ext2fs_journal_transaction *trans;
 	struct ext2fs_journal *jrnp;
 
@@ -740,15 +751,15 @@ ext2_journal_biodone(struct buf *bp)
 /*
  * Allocate and initialize a journal buffer.
  */
-static struct ext2_journal_buf *
+static struct ext2fs_journal_buf *
 ext2_journal_buf_alloc(struct ext2fs_journal *jrnp, struct buf *bp,
-    enum ext2_journal_buf_type type)
+    enum ext2fs_journal_buf_type type)
 {
-	struct ext2_journal_buf *jbuf;
+	struct ext2fs_journal_buf *jbuf;
 
 	EXT2_JTRACE_ENTER();
 
-	jbuf = malloc(sizeof(struct ext2_journal_buf), M_EXT2JBUF,
+	jbuf = malloc(sizeof(struct ext2fs_journal_buf), M_EXT2JBUF,
 	    M_WAITOK | M_ZERO);
 
 	jbuf->jb_owning_trans = jrnp->jrn_active_trans;
@@ -767,7 +778,7 @@ ext2_journal_buf_alloc(struct ext2fs_journal *jrnp, struct buf *bp,
  * Free a journal buf type.
  */
 static void
-ext2_journal_buf_free(struct ext2_journal_buf *jbuf)
+ext2_journal_buf_free(struct ext2fs_journal_buf *jbuf)
 {
 	KASSERT(jbuf != NULL, "jbuf to free is NULL\n");
 	KASSERT(jbuf->jb_buf == NULL, "buf of jbuf is NOT NULL\n");
@@ -782,7 +793,7 @@ ext2_journal_buf_free(struct ext2_journal_buf *jbuf)
 static void
 ext2_journal_buf_free_list(struct ext2_journal_buf_list *head)
 {
-	struct ext2_journal_buf *jbuf, *next;
+	struct ext2fs_journal_buf *jbuf, *next;
 
 	EXT2_JTRACE_ENTER();
 
@@ -817,6 +828,7 @@ ext2_journal_transaction_alloc(struct ext2fs_journal *journal)
 
 	TAILQ_INIT(&trans->jt_data_buffers);
 	TAILQ_INIT(&trans->jt_metadata_buffers);
+	TAILQ_INIT(&trans->jt_revoke_list);
 	cv_init(&trans->jt_iowait_cv, "jrniowait");
 
 	return (trans);
@@ -841,6 +853,7 @@ ext2_journal_transaction_free(struct ext2fs_journal_transaction *trans)
 	/* Free all journal buffer descriptors */
 	ext2_journal_buf_free_list(&trans->jt_data_buffers);
 	ext2_journal_buf_free_list(&trans->jt_metadata_buffers);
+	ext2_journal_revoke_list_clear(&trans->jt_revoke_list);
 
 	/* Destroy condition variable */
 	cv_destroy(&trans->jt_iowait_cv);
@@ -855,7 +868,7 @@ int
 ext2_journal_dirty_data(struct ext2fs_journal *jrnp, struct buf *bp)
 {
 	struct ext2fs_journal_transaction *trans;
-	struct ext2_journal_buf *jbuf;
+	struct ext2fs_journal_buf *jbuf;
 
 	EXT2_JTRACE_ENTER();
 
@@ -909,7 +922,7 @@ int
 ext2_journal_dirty_metadata(struct ext2fs_journal *jrnp, struct buf *bp)
 {
 	struct ext2fs_journal_transaction *trans;
-	struct ext2_journal_buf *jbuf;
+	struct ext2fs_journal_buf *jbuf;
 
 	EXT2_JTRACE_ENTER();
 
@@ -1091,7 +1104,7 @@ ext2_journal_write_desc_blk(struct ext2fs_journal *jrnp, uint32_t *blknu)
 	struct ext2fs_journal_transaction *trans = jrnp->jrn_committing_trans;
 	struct ext2fs_journal_block_header *header;
 	struct ext2fs_journal_desc_tag *tag;
-	struct ext2_journal_buf *jbuf;
+	struct ext2fs_journal_buf *jbuf;
 	struct buf *desc_buf;
 	char *desc_data;
 	uint32_t tag_offset = sizeof(struct ext2fs_journal_block_header);
@@ -1258,7 +1271,7 @@ static int
 ext2_journal_checkpoint_metadata(struct ext2fs_journal *jrnp,
     struct ext2fs_journal_transaction *trans)
 {
-	struct ext2_journal_buf *jbuf;
+	struct ext2fs_journal_buf *jbuf;
 	struct buf *bp;
 	int error = 0;
 
@@ -1567,4 +1580,303 @@ ext2_journal_block_new_tran(struct ext2fs_journal *jrnp) {
 	mtx_lock(&jrnp->jrn_lock);
 	jrnp->jrn_block_new_trans = true;
 	mtx_unlock(&jrnp->jrn_lock);
+}
+
+static inline int
+ext2_journal_revoke_hash(uint32_t blocknr)
+{
+	return (blocknr % EXT2_REVOKE_TABLE_SIZE);
+}
+
+static struct ext2fs_journal_revoke_table *
+ext2_journal_revoke_table_create(void)
+{
+	struct ext2fs_journal_revoke_table *table;
+	int i;
+
+	table = malloc(sizeof(struct ext2fs_journal_revoke_table),  M_EXT2REVOKE,
+	    M_WAITOK | M_ZERO);
+
+	for (i = 0; i < EXT2_REVOKE_TABLE_SIZE; i++) {
+		LIST_INIT(&table->jrt_hash[i]);
+	}
+	table->rt_record_count = 0;
+
+	return (table);
+}
+
+static void
+ext2_journal_revoke_table_destroy(struct ext2fs_journal_revoke_table *table)
+{
+	struct ext2fs_journal_revoke_record *record, *next;
+	int i;
+
+	if (table == NULL)
+		return;
+
+	for (i = 0; i < EXT2_REVOKE_TABLE_SIZE; i++) {
+		LIST_FOREACH_SAFE(record, &table->jrt_hash[i], jrr_hash, next) {
+			LIST_REMOVE(record, jrr_hash);
+			free(record, M_EXT2REVOKE);
+		}
+	}
+
+	free(table, M_EXT2REVOKE);
+}
+
+static int
+ext2_journal_revoke_table_add(struct ext2fs_journal_revoke_table *table,
+    uint32_t blocknr, uint32_t sequence)
+{
+	struct ext2fs_journal_revoke_record *record;
+	int hash_idx;
+
+	hash_idx = ext2_journal_revoke_hash(blocknr);
+
+	LIST_FOREACH(record, &table->jrt_hash[hash_idx], jrr_hash) {
+		if (record->jrr_blocknr == blocknr) {
+			return (0);
+		}
+	}
+
+	/* Create new record */
+	record = malloc(sizeof(struct ext2fs_journal_revoke_record), M_EXT2REVOKE,
+	    M_WAITOK | M_ZERO);
+	record->jrr_blocknr = blocknr;
+	record->jrr_sequence = sequence;
+
+	LIST_INSERT_HEAD(&table->jrt_hash[hash_idx], record, jrr_hash);
+	table->rt_record_count++;
+
+	return (0);
+}
+
+static void
+ext2_journal_revoke_table_clear(struct ext2fs_journal_revoke_table *table)
+{
+	struct ext2fs_journal_revoke_record *record, *next;
+	int i;
+
+	if (table == NULL)
+		return;
+
+	for (i = 0; i < EXT2_REVOKE_TABLE_SIZE; i++) {
+		LIST_FOREACH_SAFE(record, &table->jrt_hash[i], jrr_hash, next) {
+			LIST_REMOVE(record, jrr_hash);
+			free(record, M_EXT2REVOKE);
+		}
+	}
+	table->rt_record_count = 0;
+}
+
+static int
+ext2_journal_revoke_list_add(struct ext2fs_journal_revoke_list *list, struct buf *bp)
+{
+	struct ext2fs_journal_buf *jbuf;
+	struct ext2fs_journal_revoke_entry *entry;
+
+	jbuf = bp->b_fsprivate1;
+
+	/* Check if already in list */
+	if (jbuf->revoke_entry != NULL) {
+		return (0);
+	}
+
+	entry = malloc(sizeof(struct ext2fs_journal_revoke_entry), M_EXT2REVOKE,
+	    M_WAITOK | M_ZERO);
+	entry->jre_blocknr = bp->b_blkno;
+	jbuf->revoke_entry = entry;
+
+	TAILQ_INSERT_TAIL(list, entry, jre_list);
+
+	return (0);
+}
+
+static void
+ext2_journal_revoke_list_clear(struct ext2fs_journal_revoke_list *list)
+{
+	struct ext2fs_journal_revoke_entry *entry, *next;
+
+	TAILQ_FOREACH_SAFE(entry, list, jre_list, next) {
+		TAILQ_REMOVE(list, entry, jre_list);
+		free(entry, M_EXT2REVOKE);
+	}
+}
+
+static inline int
+ext2_journal_revoke_list_count(struct ext2fs_journal_revoke_list *list)
+{
+	struct ext2fs_journal_revoke_entry *entry;
+	int count = 0;
+
+	TAILQ_FOREACH(entry, list, jre_list) {
+		count++;
+	}
+
+	return (count);
+}
+
+static int
+ext2_journal_parse_revoke_block(struct ext2fs_journal *jrnp, void *data,
+    uint32_t block_size, uint32_t sequence)
+{
+	struct ext2fs_journal_revoke_header *header;
+	uint32_t *revoke_data;
+	uint32_t revoke_count;
+	uint32_t revoke_size;
+	uint32_t blocknr;
+	int i, error = 0;
+
+	header = (struct ext2fs_journal_revoke_header *)data;
+	revoke_size = be32toh(header->jrh_size);
+
+	/* Validate revoke block size */
+	if (revoke_size > block_size ||
+	    revoke_size < sizeof(struct ext2fs_journal_revoke_header)) {
+		return (EINVAL);
+	}
+
+	/* Calculate number of revoked blocks */
+	revoke_count = (revoke_size -
+			   sizeof(struct ext2fs_journal_revoke_header)) /
+	    4;
+	revoke_data = (uint32_t *)((char *)data +
+	    sizeof(struct ext2fs_journal_revoke_header));
+
+	EXT2_JPRINTF("Parsing revoke block: seq=%u, count=%u\n", sequence,
+	    revoke_count);
+
+	/* Add each revoked block to the table */
+	for (i = 0; i < revoke_count; i++) {
+		blocknr = be32toh(revoke_data[i]);
+		error = ext2_journal_revoke_table_add(jrnp->jrn_revoke_table, blocknr,
+		    sequence);
+		if (error) {
+			break;
+		}
+	}
+
+	return (error);
+}
+
+static int
+ext2_journal_write_revoke_block(struct ext2fs_journal *jrnp,
+    struct ext2fs_journal_revoke_list *revoke_list, uint32_t *blknu)
+{
+	struct ext2fs_journal_revoke_header *header;
+	struct ext2fs_journal_revoke_entry *entry;
+	struct buf *revoke_buf;
+	uint32_t *revoke_data;
+	uint32_t revoke_count;
+	uint32_t data_size;
+	int i = 0, error;
+
+	revoke_count = ext2_journal_revoke_list_count(revoke_list);
+	if (revoke_count == 0) {
+		return (0);
+	}
+
+	/* Get buffer for revoke block */
+	revoke_buf = getblk(jrnp->jrn_vp, *blknu, jrnp->jrn_blocksize, 0, 0, 0);
+	if (revoke_buf == NULL) {
+		return (ENOMEM);
+	}
+
+	memset(revoke_buf->b_data, 0, jrnp->jrn_blocksize);
+
+	/* Set up revoke header */
+	header = (struct ext2fs_journal_revoke_header *)revoke_buf->b_data;
+	header->jrh_header.jbh_magic = htobe32(EXT2_JOURNAL_MAGIC);
+	header->jrh_header.jbh_blocktype = htobe32(EXT2_JOURNAL_REVOKE_BLOCK);
+	header->jrh_header.jbh_sequence_num = htobe32(jrnp->jrn_sequence);
+
+	/* Calculate size of revoke data */
+	data_size = sizeof(struct ext2fs_journal_revoke_header) +
+	    (revoke_count * 4);
+	header->jrh_size = htobe32(data_size);
+
+	/* Write revoked block numbers */
+	revoke_data = (uint32_t *)((char *)revoke_buf->b_data +
+	    sizeof(struct ext2fs_journal_revoke_header));
+
+	TAILQ_FOREACH(entry, revoke_list, jre_list) {
+		revoke_data[i] = htobe32(entry->jre_blocknr);
+		i++;
+	}
+
+	error = bwrite(revoke_buf);
+	if (error) {
+		return (error);
+	}
+
+	(*blknu)++;
+	if (*blknu > jrnp->jrn_last) {
+		*blknu = jrnp->jrn_first;
+	}
+
+	EXT2_JTRACE_EXIT(0);
+	return (0);
+}
+
+int
+ext2_journal_revoke_buf(struct ext2fs_journal *jrnp, struct buf *bp)
+{
+	struct ext2fs_journal_transaction *trans;
+	struct ext2fs_journal_buf *jbuf;
+	uint32_t sequence;
+	int error;
+
+	mtx_lock(&jrnp->jrn_lock);
+	trans = jrnp->jrn_active_trans;
+
+	if (trans == NULL || trans->jt_owner != curthread) {
+		mtx_unlock(&jrnp->jrn_lock);
+		return (EINVAL);
+	}
+
+
+	error = ext2_journal_revoke_list_add(&trans->jt_revoke_list, bp);
+
+	jbuf = (struct ext2fs_journal_buf *)bp->b_fsprivate1;
+	sequence = trans->jt_journal->jrn_sequence;
+	if (jbuf != NULL) {
+		EXT2_JPRINTF("Revoke a journal buf already logged\n");
+		jbuf->jb_revoked = true;
+		jbuf->jb_revoke_sequence = sequence;
+	}
+
+	mtx_unlock(&jrnp->jrn_lock);
+	return (error);
+}
+
+int
+ext2_journal_cancel_revoke(struct ext2fs_journal *jrnp, struct buf *bp)
+{
+	struct ext2fs_journal_transaction *trans;
+	struct ext2fs_journal_buf *jbuf;
+	struct ext2fs_journal_revoke_entry *entry;
+
+	mtx_lock(&jrnp->jrn_lock);
+	trans = jrnp->jrn_active_trans;
+
+	if (trans == NULL || trans->jt_owner != curthread) {
+		mtx_unlock(&jrnp->jrn_lock);
+		return (EINVAL);
+	}
+
+	/*Remove from revoke list */
+	jbuf = (struct ext2fs_journal_buf *) bp->b_fsprivate1;
+	entry = jbuf->revoke_entry;
+	TAILQ_REMOVE(&trans->jt_revoke_list, entry, jre_list);
+	free(entry, M_EXT2REVOKE);
+
+	/* Update jbuf revoke state */
+	jbuf = bp->b_fsprivate1;
+	if (jbuf !=  NULL) {
+		jbuf->jb_revoked = false;
+		jbuf->jb_revoke_sequence = 0;
+	}
+
+	mtx_unlock(&jrnp->jrn_lock);
+	return (0);
 }
