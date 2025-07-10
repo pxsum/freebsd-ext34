@@ -289,4 +289,22 @@ int ext2_journal_checkpoint_trans(struct ext2fs_journal *jrnp);
 int ext2_journal_revoke_buf(struct ext2fs_journal *jrnp, struct buf *bp);
 int ext2_journal_cancel_revoke(struct ext2fs_journal *jrnp, struct buf *bp);
 
+#define EXT2_JOURNAL_START(jrnp, nblocks)                                   \
+	do {                                                                \
+		if (jrnp) {                                                 \
+			int _error = ext2_journal_start((jrnp), (nblocks)); \
+			if (_error) {                                       \
+				EXT2_JERROR("journal start failed\n");      \
+				return (_error);                            \
+			}                                                   \
+		}                                                           \
+	} while (0)
+
+#define EXT2_JOURNAL_STOP(jrnp)                        \
+	do {                                           \
+		if (jrnp) {                            \
+			(void)ext2_journal_stop(jrnp); \
+		}                                      \
+	} while (0)
+
 #endif	/* !_FS_EXT2FS_EXT2_JOURNAL_H_ */
