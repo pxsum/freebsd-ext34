@@ -87,6 +87,16 @@ ext2_journal_verify_block(void *data)
 	return (be32toh(jrn_bhr->jbh_magic) == EXT2_JOURNAL_MAGIC);
 }
 
+static inline uint32_t
+ext2_journal_next_block(struct ext2fs_journal *jrnp, uint32_t blknu)
+{
+	blknu++;
+	if (blknu > jrnp->jrn_last)
+		blknu = jrnp->jrn_first;
+
+	return (blknu);
+}
+
 /*
  * Opens the journal inode and reads its superblock.
  *
@@ -320,9 +330,7 @@ ext2_journal_walk_trans(struct ext2fs_journal *jrnp,
 		more_desc_blocks = !has_last_tag;
 		desc_data = desc_buf->b_data;
 		tag_offset = sizeof(struct ext2fs_journal_block_header);
-		jrn_blk_ptr = curr_blk + 1;
-		if (jrn_blk_ptr > jrnp->jrn_last)
-			jrn_blk_ptr = jrnp->jrn_first;
+		jrn_blk_ptr = ext2_journal_next_block(jrnp, jrn_blk_ptr);
 
 		/* Process all tags within this descriptor block */
 		for (uint32_t i = 0; i < blocks_in_desc; i++) {
@@ -410,9 +418,7 @@ ext2_journal_walk_trans(struct ext2fs_journal *jrnp,
 	brelse(desc_buf);
 	desc_buf = NULL;
 
-	curr_blk++;
-	if (curr_blk > jrnp->jrn_last)
-		curr_blk = jrnp->jrn_first;
+	curr_blk = ext2_journal_next_block(jrnp, curr_blk);
 	*next_trans_start = curr_blk;
 
 	return (0);
@@ -1084,10 +1090,7 @@ ext2_journal_write_desc_blocks(struct ext2fs_journal *jrnp, uint32_t *blknu)
 					EXT2_JTRACE_EXIT(error);
 					return (error);
 				}
-				(*blknu)++;
-				if (*blknu > jrnp->jrn_last) {
-					*blknu = jrnp->jrn_first;
-				}
+				*blknu = ext2_journal_next_block(jrnp, *blknu);
 			}
 
 			/* Get new descriptor block */
@@ -1157,10 +1160,7 @@ ext2_journal_write_desc_blocks(struct ext2fs_journal *jrnp, uint32_t *blknu)
 			EXT2_JTRACE_EXIT(error);
 			return (error);
 		}
-		(*blknu)++;
-		if (*blknu > jrnp->jrn_last) {
-			*blknu = jrnp->jrn_first;
-		}
+		*blknu = ext2_journal_next_block(jrnp, *blknu);
 	}
 
 	EXT2_JTRACE_EXIT(0);
@@ -1200,11 +1200,7 @@ ext2_journal_write_commit_blk(struct ext2fs_journal *jrnp,
 		return (error);
 	}
 
-	(*blknu)++;
-	/* Handle circular journal wraparound */
-	if (*blknu > jrnp->jrn_last) {
-		*blknu = jrnp->jrn_first;
-	}
+	*blknu = ext2_journal_next_block(jrnp, *blknu);
 
 	EXT2_JTRACE_EXIT(0);
 	return (0);
@@ -1241,11 +1237,7 @@ ext2_journal_write_metadata_blcks(struct ext2fs_journal *jrnp,
 			break;
 		}
 
-		/* Move to next journal block */
-		(*blknu)++;
-		if (*blknu > jrnp->jrn_last) {
-			*blknu = jrnp->jrn_first;
-		}
+		*blknu = ext2_journal_next_block(jrnp, *blknu);
 	}
 
 	EXT2_JTRACE_EXIT(error);
@@ -1814,10 +1806,7 @@ ext2_journal_write_revoke_block(struct ext2fs_journal *jrnp,
 		return (error);
 	}
 
-	(*blknu)++;
-	if (*blknu > jrnp->jrn_last) {
-		*blknu = jrnp->jrn_first;
-	}
+	*blknu = ext2_journal_next_block(jrnp, *blknu);
 
 	EXT2_JTRACE_EXIT(0);
 	return (0);
