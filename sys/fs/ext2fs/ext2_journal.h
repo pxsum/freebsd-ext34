@@ -115,6 +115,8 @@ struct ext2fs_journal_desc_tail {
 	uint32_t jbt_checksum;
 };
 
+#define EXT2_REVOKE_TABLE_SIZE 256
+
 /*
  * Revoke blocks list blocks that should not be replayed during recovery.
  */
@@ -124,11 +126,33 @@ struct ext2fs_journal_revoke_header {
 };
 
 /*
+ * A revoke record represents one revoked block that should not be replayed
+ * until the latest transaction that revoked this block.
+ */
+struct ext2fs_journal_revoke_record {
+	LIST_ENTRY(ext2fs_journal_revoke_record) jrr_hash; /* In memory list */
+	uint32_t jrr_blocknr;
+	uint32_t jrr_sequence;
+};
+
+/*
  * Used for verifying revoke block integrity.
  */
 struct ext2fs_journal_revoke_tail {
 	uint32_t jrt_checksum;
 };
+
+struct ext2fs_journal_revoke_table {
+	LIST_HEAD(, ext2fs_journal_revoke_record) jrt_hash[EXT2_REVOKE_TABLE_SIZE];
+	int rt_record_count;
+};
+
+struct ext2fs_journal_revoke_entry {
+	TAILQ_ENTRY(ext2fs_journal_revoke_entry) jre_list;
+	uint32_t jre_blocknr;
+};
+
+TAILQ_HEAD(ext2fs_journal_revoke_list, ext2fs_journal_revoke_entry);
 
 #define	JOURNAL_COMMIT_CHECKSUM_SIZE (32)
 
@@ -156,21 +180,26 @@ enum ext2_journal_trans_state {
 	EXT2_TRANS_FLUSH
 };
 
-enum ext2_journal_buf_type {
+enum ext2fs_journal_buf_type {
 	EXT2_JBUF_DATA,
 	EXT2_JBUF_METADATA
 };
 
-struct ext2_journal_buf {
-	TAILQ_ENTRY(ext2_journal_buf) jb_list;
+struct ext2fs_journal_buf {
+	TAILQ_ENTRY(ext2fs_journal_buf) jb_list;
 
 	struct ext2fs_journal_transaction *jb_owning_trans;
 	struct buf *jb_buf;
-	enum ext2_journal_buf_type jb_type;
+	enum ext2fs_journal_buf_type jb_type;
 	uint32_t jb_blocknr;
+
+	/* Revoke state tracking */
+	bool jb_revoked;
+	uint32_t jb_revoke_sequence;
+	struct ext2fs_journal_revoke_entry *revoke_entry;
 };
 
-TAILQ_HEAD(ext2_journal_buf_list, ext2_journal_buf);
+TAILQ_HEAD(ext2_journal_buf_list, ext2fs_journal_buf);
 struct ext2fs_journal_transaction {
 	struct ext2fs_journal *jt_journal;
 	enum ext2_journal_trans_state jt_state;
@@ -184,6 +213,9 @@ struct ext2fs_journal_transaction {
 	/* Buffer lists for ordered journaling */
 	struct ext2_journal_buf_list jt_data_buffers;
 	struct ext2_journal_buf_list jt_metadata_buffers;
+
+	struct ext2fs_journal_revoke_list jt_revoke_list;
+
 	int jt_data_count;
 	int jt_metadata_count;
 
@@ -202,15 +234,17 @@ struct m_ext2fs;
  * The on-disk superblock is kept in big-endian while all other fields are in
  * host byte order.
  */
-TAILQ_HEAD(ext2_journal_checkpoint_list, ext2fs_journal_transaction);
+TAILQ_HEAD(ext2fs_journal_checkpoint_list, ext2fs_journal_transaction);
 struct ext2fs_journal {
 	struct vnode *jrn_vp;
+	struct vnode *jrnp_devvp;
 	struct m_ext2fs *jrn_fs;
 	struct ext2fs_journal_sb *jrn_sb;
 	struct ext2fs_journal_transaction *jrn_active_trans;
 	struct ext2fs_journal_transaction *jrn_committing_trans;
 	/* List of transactions to checkpoint */
-	struct ext2_journal_checkpoint_list jrn_checkpoint_list;
+	struct ext2fs_journal_checkpoint_list jrn_checkpoint_list;
+	struct ext2fs_journal_revoke_table *jrn_revoke_table;
 
 	bool		jrn_block_new_trans;
 
@@ -244,5 +278,9 @@ int ext2_journal_dirty_data(struct ext2fs_journal *jrnp, struct buf *bp);
 void ext2_journal_block_new_tran(struct ext2fs_journal *jrnp);
 int ext2_journal_force_commit(struct ext2fs_journal *jrnp);
 int ext2_journal_checkpoint_trans(struct ext2fs_journal *jrnp);
+
+
+int ext2_journal_revoke_buf(struct ext2fs_journal *jrnp, struct buf *bp);
+int ext2_journal_cancel_revoke(struct ext2fs_journal *jrnp, struct buf *bp);
 
 #endif	/* !_FS_EXT2FS_EXT2_JOURNAL_H_ */
