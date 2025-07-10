@@ -185,6 +185,12 @@ enum ext2fs_journal_buf_type {
 	EXT2_JBUF_METADATA
 };
 
+enum ext2fs_journal_pass_type {
+	PASS_INITIAL,
+	PASS_REVOKE,
+	PASS_REPLAY
+};
+
 struct ext2fs_journal_buf {
 	TAILQ_ENTRY(ext2fs_journal_buf) jb_list;
 
