@@ -309,4 +309,13 @@ int ext2_journal_cancel_revoke(struct ext2fs_journal *jrnp, struct buf *bp);
 		}                                      \
 	} while (0)
 
+#define EXT2_JOURNALING_IS_ACTIVE(jrnp) ((jrnp) && (jrnp)->jrn_active_trans)
+
+#define EXT2_JOURNAL_DIRTY_METADATA(jrnp, bp, error)                    \
+	do {                                                            \
+		(error) = ext2_journal_dirty_metadata((jrnp), (bp));    \
+		if ((error) != 0)                                       \
+			EXT2_JERROR("journal dirty metadata failed\n"); \
+	} while (0)
+
 #endif	/* !_FS_EXT2FS_EXT2_JOURNAL_H_ */
