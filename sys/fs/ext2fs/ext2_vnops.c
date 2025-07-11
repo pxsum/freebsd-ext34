@@ -719,13 +719,10 @@ ext2_link(struct vop_link_args *ap)
 	}
 
 	/* If journaling is on, wrap this file operation in a transaction */
-	if (jrnp) {
-		/* 100 is arbitrary for now, we just need enough journal space*/
-		error = ext2_journal_start(jrnp, 100);
-		if (error) {
-			printf("ext2_link error: journal start\n");
-			return (error);
-		}
+	if (EXT2_JOURNAL_IS_PRESENT(jrnp)) {
+		EXT2_JOURNAL_START(jrnp, 100, error);
+		if (error)
+			goto out;
 	}
 
 	ip->i_nlink++;
@@ -738,12 +735,7 @@ ext2_link(struct vop_link_args *ap)
 		ip->i_flag |= IN_CHANGE;
 	}
 out:
-	if (jrnp) {
-		error = ext2_journal_stop(jrnp);
-		if (error) {
-			printf("ext2_link: journal stop\n");
-		}
-	}
+	EXT2_JOURNAL_STOP(jrnp);
 	return (error);
 }
 

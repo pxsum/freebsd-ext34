@@ -1061,24 +1061,15 @@ ext2_add_entry(struct vnode *dvp, struct ext2fs_direct_2 *entry)
 	}
 	bcopy((caddr_t)entry, (caddr_t)ep, (u_int)newentrysize);
 	ext2_dirent_csum_set(dp, (struct ext2fs_direct_2 *)bp->b_data);
-	if (jrnp && jrnp->jrn_active_trans != NULL) {
+	if (EXT2_JOURNALING_IS_ACTIVE(jrnp)) {
 		EXT2_JPRINTF("journal is on, calling dirty metadata\n");
-		error = ext2_journal_dirty_metadata(jrnp, bp);
-		if (error) {
-			EXT2_JERROR("journal fail dirty meta: %d\n", error);
-			return (error);
-		} else {
-			// journaling is working so just return
-			return (error);
-		}
+		EXT2_JOURNAL_DIRTY_METADATA(jrnp, bp, error);
+		return (error);
 	}
-	// write to disk for now if journaling fails
 	if (DOINGASYNC(dvp)) {
-		printf("ext2_add_entry: writing to disk asyn, no journal\n");
 		bdwrite(bp);
 		error = 0;
 	} else {
-		printf("ext2_add_entry: writing to disk sync, no journal\n");
 		error = bwrite(bp);
 	}
 	dp->i_flag |= IN_CHANGE | IN_UPDATE;

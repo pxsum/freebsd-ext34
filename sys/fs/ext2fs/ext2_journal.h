@@ -282,24 +282,20 @@ int ext2_journal_stop(struct ext2fs_journal *jrnp);
 int ext2_journal_dirty_metadata(struct ext2fs_journal *jrnp, struct buf *bp);
 int ext2_journal_dirty_data(struct ext2fs_journal *jrnp, struct buf *bp);
 
-
 void ext2_journal_block_new_tran(struct ext2fs_journal *jrnp);
 int ext2_journal_force_commit(struct ext2fs_journal *jrnp);
 int ext2_journal_checkpoint_trans(struct ext2fs_journal *jrnp);
 
-
 int ext2_journal_revoke_buf(struct ext2fs_journal *jrnp, struct buf *bp);
 int ext2_journal_cancel_revoke(struct ext2fs_journal *jrnp, struct buf *bp);
 
-#define EXT2_JOURNAL_START(jrnp, nblocks)                                   \
-	do {                                                                \
-		if (jrnp) {                                                 \
-			int _error = ext2_journal_start((jrnp), (nblocks)); \
-			if (_error) {                                       \
-				EXT2_JERROR("journal start failed\n");      \
-				return (_error);                            \
-			}                                                   \
-		}                                                           \
+#define EXT2_JOURNAL_IS_PRESENT(jrnp) ((jrnp) != NULL)
+
+#define EXT2_JOURNAL_START(jrnp, nblocks, error)                 \
+	do {                                                     \
+		(error) = ext2_journal_start((jrnp), (nblocks)); \
+		if ((error) != 0)                                \
+			EXT2_JERROR("journal start failed\n");   \
 	} while (0)
 
 #define EXT2_JOURNAL_STOP(jrnp)                        \
