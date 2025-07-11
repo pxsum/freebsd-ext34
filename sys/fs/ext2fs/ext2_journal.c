@@ -435,6 +435,7 @@ ext2_journal_recover(struct ext2fs_journal *jrnp)
 {
 	uint32_t start_block, end_block, next_trans_start;
 	uint32_t curr_trans_start;
+	uint32_t initial_seq;
 	uint32_t end_seq;
 	int error;
 
@@ -451,6 +452,7 @@ ext2_journal_recover(struct ext2fs_journal *jrnp)
 	start_block = curr_trans_start = jrnp->jrn_log_start;
 	end_block = jrnp->jrn_log_start;
 	end_seq = jrnp->jrn_sequence;
+	initial_seq = end_seq = jrnp->jrn_sequence;
 
 	while (true) {
 		error = ext2_journal_walk_trans(jrnp, PASS_INITIAL,
@@ -471,6 +473,15 @@ ext2_journal_recover(struct ext2fs_journal *jrnp)
 		curr_trans_start = next_trans_start;
 	}
 
+	if (end_seq == initial_seq) {
+		EXT2_JPRINTF("No transaction log records to recover.\n");
+		jrnp->jrn_log_start = jrnp->jrn_first;
+		jrnp->jrn_sequence = 1;
+		jrnp->jrn_flags &= ~EXT2_JOURNAL_NEEDS_RECOVERY;
+		jrnp->jrn_flags |= EXT2_JOURNAL_CLEAN;
+
+		return (0);
+	}
 	/*
 	 * Walk the journal range and build the revoke table.
 	 */
