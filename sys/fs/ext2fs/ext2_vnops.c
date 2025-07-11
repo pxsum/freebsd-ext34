@@ -735,7 +735,7 @@ ext2_link(struct vop_link_args *ap)
 		ip->i_flag |= IN_CHANGE;
 	}
 out:
-	EXT2_JOURNAL_STOP(jrnp);
+	EXT2_JOURNAL_STOP(jrnp, error);
 	return (error);
 }
 
@@ -2244,11 +2244,18 @@ ext2_write(struct vop_write_args *ap)
 	if ((ioflag & IO_SYNC) && !DOINGASYNC(vp))
 		flags |= IO_SYNC;
 
-	/* for now only start journaling if upating a directory entry */
-	if (jrnp && vp->v_type == VDIR) {
-		error = ext2_journal_start(jrnp, 100);
+	/*
+	 * For now we journaling writes if the vnode if a dir
+	 * This guarantees that journaling was started from a different
+	 * file operation.
+	 *
+	 * Journaling writes normally is compex so I'm ignoring for now.
+	 */
+
+	if (EXT2_JOURNALING_IS_ACTIVE(jrnp) && vp->v_type == VDIR) {
+		EXT2_JOURNAL_START(jrnp, 100, error);
 		if (error) {
-			printf("ext2_write: journal start fail\n");
+			EXT2_JERROR();
 		}
 	}
 
@@ -2312,12 +2319,10 @@ ext2_write(struct vop_write_args *ap)
 
 		vfs_bio_set_flags(bp, ioflag);
 
-		/* If journaling is on and updating metadata, journal metadata */
-		if (jrnp && vp->v_type == VDIR) {
-			printf("ext2_write: vp is dir, writing to it\n");
-			error = ext2_journal_dirty_metadata(jrnp, bp);
+		/* If journaling is active and we are updating metadata, journal */
+		if (EXT2_JOURNALING_IS_ACTIVE(jrnp) && vp->v_type == VDIR) {
+			EXT2_JOURNAL_DIRTY_METADATA(jrnp, bp, error);
 			if (error) {
-				printf("ext2_write: journal dirty metadata failed: %d\n", error);
 				brelse(bp);
 				break;
 			}
@@ -2380,14 +2385,8 @@ ext2_write(struct vop_write_args *ap)
 	}
 	/* if (uio->uio_resid > 0) */
 	/* 	goto forloop; */
-	if (jrnp && vp->v_type == VDIR) {
-		if (error) {
-			printf("ext2_write: error before journal stop\n");
-		}
-		error = ext2_journal_stop(jrnp);
-		if (error) {
-			printf("ext2_write: error after journal stop\n");
-		}
+	if (EXT2_JOURNALING_IS_ACTIVE(jrnp) && vp->v_type == VDIR) {
+		EXT2_JOURNAL_STOP(jrnp, error);
 	}
 
 	return (error);
