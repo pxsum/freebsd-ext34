@@ -1289,11 +1289,20 @@ int
 ext2_journal_checkpoint_trans(struct ext2fs_journal *jrnp)
 {
 	struct ext2fs_journal_transaction *trans, *next_trans;
+	struct ext2fs_journal_sb *disk_sb;
+	struct buf *sb_buf;
 	int freed_blocks = 0;
 	int error = 0;
 
 	EXT2_JTRACE_ENTER();
 	mtx_lock(&jrnp->jrn_lock);
+
+	/*
+	 * If there's nothing to checkpoint, exit.
+	 */
+	if (TAILQ_EMPTY(&jrnp->jrn_checkpoint_list)) {
+		goto unlock_and_exit;
+	}
 
 	TAILQ_FOREACH_SAFE(trans, &jrnp->jrn_checkpoint_list,
 	    jt_checkpoint_entry, next_trans) {
@@ -1313,7 +1322,8 @@ ext2_journal_checkpoint_trans(struct ext2fs_journal *jrnp)
 			return (EINVAL);
 		}
 
-		TAILQ_REMOVE(&jrnp->jrn_checkpoint_list, trans, jt_checkpoint_entry);
+		TAILQ_REMOVE(&jrnp->jrn_checkpoint_list, trans,
+		    jt_checkpoint_entry);
 		freed_blocks += trans->jt_blocks_reserved;
 
 		ext2_journal_transaction_free(trans);
@@ -1321,15 +1331,44 @@ ext2_journal_checkpoint_trans(struct ext2fs_journal *jrnp)
 
 	if (freed_blocks > 0) {
 		jrnp->jrn_free_blocks += freed_blocks;
-		/* Update the log start */
-		jrnp->jrn_log_start = jrnp->jrn_log_end;
+		/* Update the log start and starting seq num */
+		if (TAILQ_EMPTY(&jrnp->jrn_checkpoint_list)) {
+			jrnp->jrn_log_start = jrnp->jrn_log_end;
+			jrnp->jrn_sb->jsb_sequence_id = htobe32(
+			    jrnp->jrn_sequence);
+		}
 
 		/* Wake up threads waiting for more journal space */
 		cv_signal(&jrnp->jrn_space_cv);
 
-		// TODO update superblock
+		/*
+		 * Update the on-disk journal superblock to make the free space
+		 * persistent across reboots.
+		 */
+		error = bread(jrnp->jrn_vp, 0, jrnp->jrn_blocksize, NOCRED,
+		    &sb_buf);
+		if (error) {
+			EXT2_JERROR("bread failed for journal superblock: %d\n",
+			    error);
+			jrnp->jrn_flags |= EXT2_JOURNAL_ABORTED;
+			goto unlock_and_exit;
+		}
+
+		disk_sb = (struct ext2fs_journal_sb *)sb_buf->b_data;
+		disk_sb->jsb_start_block_num = htobe32(jrnp->jrn_log_start);
+		disk_sb->jsb_sequence_id = htobe32(
+		    be32toh(jrnp->jrn_sb->jsb_sequence_id));
+
+		error = bwrite(sb_buf);
+		if (error) {
+			EXT2_JERROR(
+			    "bwrite failed for journal superblock: %d\n",
+			    error);
+			jrnp->jrn_flags |= EXT2_JOURNAL_ABORTED;
+		}
 	}
 
+unlock_and_exit:
 	KASSERT(jrnp->jrn_block_new_trans == true,
 	    "new transactions were allowed to start while checkpointing\n");
 
