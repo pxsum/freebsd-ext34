@@ -38,6 +38,8 @@
 #define EXT2_JOURNAL_INCOMPAT_ASYNC_COMMIT	(4)
 #define EXT2_JOURNAL_INCOMPAT_CHECKSUM_V2	(8)
 
+#define EXT2_JRN_LOCK(jrnp) mtx_lock(&(jrnp)->jrn_lock)
+#define EXT2_JRN_UNLOCK(jrnp) mtx_unlock(&(jrnp)->jrn_lock)
 /*
  * The following structures represent the on-disk journal format.
  * All fields are stored in big-endian byte order on disk.
