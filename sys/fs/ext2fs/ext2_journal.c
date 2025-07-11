@@ -330,7 +330,7 @@ ext2_journal_walk_trans(struct ext2fs_journal *jrnp,
 		more_desc_blocks = !has_last_tag;
 		desc_data = desc_buf->b_data;
 		tag_offset = sizeof(struct ext2fs_journal_block_header);
-		jrn_blk_ptr = ext2_journal_next_block(jrnp, jrn_blk_ptr);
+		jrn_blk_ptr = ext2_journal_next_block(jrnp, curr_blk);
 
 		/* Process all tags within this descriptor block */
 		for (uint32_t i = 0; i < blocks_in_desc; i++) {
@@ -372,10 +372,7 @@ ext2_journal_walk_trans(struct ext2fs_journal *jrnp,
 						goto walk_fail;
 				}
 			}
-			jrn_blk_ptr++;
-			if (jrn_blk_ptr > jrnp->jrn_last)
-				jrn_blk_ptr = jrnp->jrn_first;
-
+			jrn_blk_ptr = ext2_journal_next_block(jrnp, jrn_blk_ptr);
 			tag_offset += tag_size;
 		}
 		brelse(desc_buf);
