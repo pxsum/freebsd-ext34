@@ -55,7 +55,10 @@ MALLOC_DEFINE(M_EXT2JTRANS, "ext2fs_journal_trans", "ext2 journal transaction");
 MALLOC_DEFINE(M_EXT2JBUF, "ext2fs_journal_buf", "ext2 journal buffer descriptor");
 MALLOC_DEFINE(M_EXT2REVOKE, "ext2fs_revoke", "ext2 journal revoke records");
 
-#define ENABLE_CHECKPOINT_WRITE
+// #define ENABLE_CHECKPOINT_WRITE
+
+// #define DISABLE_RECOVERY
+
 static struct ext2fs_journal_revoke_table *ext2_journal_revoke_table_create(
     void);
 static void ext2_journal_revoke_table_destroy(
@@ -440,6 +443,10 @@ ext2_journal_recover(struct ext2fs_journal *jrnp)
 	int error;
 
 	EXT2_JTRACE_ENTER();
+
+#if defined(DISABLE_RECOVERY)
+	return (0);
+#endif
 
 	if (!(jrnp->jrn_flags & EXT2_JOURNAL_NEEDS_RECOVERY)) {
 		EXT2_JPRINTF("Recovery not needed, journal is clean.\n");
@@ -1301,8 +1308,10 @@ int
 ext2_journal_checkpoint_trans(struct ext2fs_journal *jrnp)
 {
 	struct ext2fs_journal_transaction *trans, *next_trans;
+#if defined(ENABLE_CHECKPOINT_WRITE)
 	struct ext2fs_journal_sb *disk_sb;
 	struct buf *sb_buf;
+#endif
 	int freed_blocks = 0;
 	int error = 0;
 
@@ -1346,13 +1355,17 @@ ext2_journal_checkpoint_trans(struct ext2fs_journal *jrnp)
 		/* Update the log start and starting seq num */
 		if (TAILQ_EMPTY(&jrnp->jrn_checkpoint_list)) {
 			jrnp->jrn_log_start = jrnp->jrn_log_end;
+
+#if defined(ENABLE_CHECKPOINT_WRITE)
 			jrnp->jrn_sb->jsb_sequence_id = htobe32(
 			    jrnp->jrn_sequence);
+#endif
 		}
 
 		/* Wake up threads waiting for more journal space */
 		cv_signal(&jrnp->jrn_space_cv);
 
+#if defined(ENABLE_CHECKPOINT_WRITE)
 		/*
 		 * Update the on-disk journal superblock to make the free space
 		 * persistent across reboots.
@@ -1378,6 +1391,7 @@ ext2_journal_checkpoint_trans(struct ext2fs_journal *jrnp)
 			    error);
 			jrnp->jrn_flags |= EXT2_JOURNAL_ABORTED;
 		}
+#endif
 	}
 
 unlock_and_exit:
