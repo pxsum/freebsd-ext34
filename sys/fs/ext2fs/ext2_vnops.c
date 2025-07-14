@@ -1332,8 +1332,10 @@ ext2_mkdir(struct vop_mkdir_args *ap)
 	struct inode *ip, *dp;
 	struct vnode *tvp;
 	struct dirtemplate dirtemplate, *dtp;
+	struct ext2mount *ump = VFSTOEXT2(dvp->v_mount);
+	struct ext2fs_journal *jrnp = ump->um_journal;
 	char *buf = NULL;
-	int error, dmode;
+	int error, error2, dmode;
 
 	dp = VTOI(dvp);
 	if ((nlink_t)dp->i_nlink >= EXT4_LINK_MAX &&
@@ -1341,6 +1343,11 @@ ext2_mkdir(struct vop_mkdir_args *ap)
 		error = EMLINK;
 		goto out;
 	}
+
+	if (EXT2_JOURNAL_IS_PRESENT(jrnp)) {
+		EXT2_JOURNAL_START(jrnp, 100, error);
+	}
+
 	dmode = vap->va_mode & 0777;
 	dmode |= IFDIR;
 	/*
@@ -1466,6 +1473,7 @@ bad:
 		*ap->a_vpp = tvp;
 out:
 	free(buf, M_TEMP);
+	EXT2_JOURNAL_STOP(jrnp, error2);
 	return (error);
 #undef  DIRBLKSIZ
 #define DIRBLKSIZ  DEV_BSIZE
@@ -2256,26 +2264,11 @@ ext2_write(struct vop_write_args *ap)
 	if ((ioflag & IO_SYNC) && !DOINGASYNC(vp))
 		flags |= IO_SYNC;
 
-	/*
-	 * For now we journaling writes if the vnode if a dir
-	 * This guarantees that journaling was started from a different
-	 * file operation.
-	 *
-	 * Journaling writes normally is compex so I'm ignoring for now.
-	 */
-
-	if (EXT2_JOURNALING_IS_ACTIVE(jrnp) && vp->v_type == VDIR) {
-		EXT2_JOURNAL_START(jrnp, 100, error);
-		if (error) {
-			EXT2_JERROR();
-		}
-	}
-
 	for (error = 0; uio->uio_resid > 0;) {
-//forloop:
-		/* if (jrnp) { */
-		/* 	ext2_journal_start(jrnp, 100); */
-		/* } */
+forloop:
+		if (EXT2_JOURNAL_IS_PRESENT(jrnp)) {
+			EXT2_JOURNAL_START(jrnp, 100, error);
+		}
 		lbn = lblkno(fs, uio->uio_offset);
 		blkoffset = blkoff(fs, uio->uio_offset);
 		xfersize = fs->e2fs_fsize - blkoffset;
@@ -2338,7 +2331,7 @@ ext2_write(struct vop_write_args *ap)
 				brelse(bp);
 				break;
 			}
-			/* goto jrnpath; */
+			goto jrnpath;
 		/*
 		 * If IO_SYNC each buffer is written synchronously.  Otherwise
 		 * if we have a severe page deficiency write the buffer
@@ -2371,7 +2364,7 @@ ext2_write(struct vop_write_args *ap)
 		if (error || xfersize == 0)
 			break;
 	}
-//jrnpath:
+jrnpath:
 	/*
 	 * If we successfully wrote any data, and we are not the superuser
 	 * we clear the setuid and setgid bits as a precaution against
@@ -2395,11 +2388,11 @@ ext2_write(struct vop_write_args *ap)
 		if (ioflag & IO_SYNC)
 			error = ext2_update(vp, 1);
 	}
-	/* if (uio->uio_resid > 0) */
-	/* 	goto forloop; */
 	if (EXT2_JOURNALING_IS_ACTIVE(jrnp) && vp->v_type == VDIR) {
 		EXT2_JOURNAL_STOP(jrnp, error);
 	}
+	if (uio->uio_resid > 0)
+	 	goto forloop;
 
 	return (error);
 }
