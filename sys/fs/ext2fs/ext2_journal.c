@@ -458,7 +458,6 @@ ext2_journal_recover(struct ext2fs_journal *jrnp)
 	 */
 	start_block = curr_trans_start = jrnp->jrn_log_start;
 	end_block = jrnp->jrn_log_start;
-	end_seq = jrnp->jrn_sequence;
 	initial_seq = end_seq = jrnp->jrn_sequence;
 
 	while (true) {
@@ -897,6 +896,7 @@ ext2_journal_dirty_metadata(struct ext2fs_journal *jrnp, struct buf *bp)
 {
 	struct ext2fs_journal_transaction *trans;
 	struct ext2fs_journal_buf *jbuf;
+	static int id = 0;
 
 	EXT2_JTRACE_ENTER();
 
@@ -915,8 +915,12 @@ ext2_journal_dirty_metadata(struct ext2fs_journal *jrnp, struct buf *bp)
 		KASSERT(jbuf->jb_buf != NULL, "NULL jbuf buf ref");
 		if (jbuf->jb_buf == bp) {
 			EXT2_JPRINTF("jbuf metadata found\n");
+			jbuf->jb_id = id;
+			id++;
+			EXT2_JPRINTF("jbuf metadata id: %d\n", id);
 			EXT2_JPRINT_JBUF(jbuf);
 			mtx_unlock(&jrnp->jrn_lock);
+			bqrelse(bp);
 			EXT2_JTRACE_EXIT(0);
 			return (0);
 		}
@@ -969,6 +973,8 @@ ext2_journal_dirty_metadata(struct ext2fs_journal *jrnp, struct buf *bp)
 	}
 
 	jbuf = ext2_journal_buf_alloc(jrnp, bp, EXT2_JBUF_METADATA);
+	jbuf->jb_id = id;
+	id++;
 
 	EXT2_JPRINTF("new jbuf created\n");
 
