@@ -516,6 +516,7 @@ ext2_journal_recover(struct ext2fs_journal *jrnp)
 
 	// TODO write to disk
 	jrnp->jrn_log_start = next_trans_start;
+	jrnp->jrn_log_end = next_trans_start;
 	jrnp->jrn_sequence = end_seq;
 
 	jrnp->jrn_flags &= ~EXT2_JOURNAL_NEEDS_RECOVERY;
