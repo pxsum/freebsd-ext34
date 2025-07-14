@@ -52,6 +52,8 @@
 #include <fs/ext2fs/ext2_mount.h>
 #include <fs/ext2fs/ext2fs.h>
 #include <fs/ext2fs/ext2_extern.h>
+#include <fs/ext2fs/ext2_journal.h>
+#include <fs/ext2fs/ext2_journal_debug.h>
 
 SDT_PROVIDER_DEFINE(ext2fs);
 /*
@@ -1309,8 +1311,11 @@ ext2_nodealloccg(struct inode *ip, int cg, daddr_t ipref, int mode)
 {
 	struct m_ext2fs *fs;
 	struct buf *bp;
+	struct buf *gdbp;
 	struct ext2mount *ump;
+	struct ext2fs_journal *jrnp;
 	int error, start, len, ifree, ibytes;
+	int gdb_num, desc_per_blk;
 	char *ibp, *loc;
 
 	ipref--;	/* to avoid a lot of (ipref -1) */
@@ -1318,6 +1323,7 @@ ext2_nodealloccg(struct inode *ip, int cg, daddr_t ipref, int mode)
 		ipref = 0;
 	fs = ip->i_e2fs;
 	ump = ip->i_ump;
+	jrnp = ump->um_journal;
 	if (e2fs_gd_get_nifree(&fs->e2fs_gd[cg]) == 0)
 		return (0);
 	EXT2_UNLOCK(ump);
@@ -1407,7 +1413,22 @@ gotit:
 	}
 	EXT2_UNLOCK(ump);
 	ext2_gd_i_bitmap_csum_set(fs, cg, bp);
-	bdwrite(bp);
+	if (EXT2_JOURNALING_IS_ACTIVE(jrnp)) {
+		/* Journal the bitmap update */
+		EXT2_JOURNAL_DIRTY_METADATA(jrnp, bp, error);
+
+		/* Update the in-mem dg block and journal it */
+		desc_per_blk = fs->e2fs_bsize / sizeof(struct ext2_gd);
+		gdb_num = cg / desc_per_blk;
+		gdbp = getblk(ip->i_devvp,
+		    fsbtodb(fs, ext2_cg_location(fs, gdb_num)), fs->e2fs_bsize,
+		    0, 0, 0);
+		memcpy(gdbp->b_data, &fs->e2fs_gd[gdb_num * desc_per_blk],
+		    fs->e2fs_bsize);
+		EXT2_JOURNAL_DIRTY_METADATA(jrnp, gdbp, error);
+	} else {
+		bdwrite(bp);
+	}
 	return ((uint64_t)cg * fs->e2fs_ipg + ipref + 1);
 }
 

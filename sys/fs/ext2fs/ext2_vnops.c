@@ -91,6 +91,8 @@
 #include <fs/ext2fs/ext2_extattr.h>
 #include <fs/ext2fs/ext2_extents.h>
 
+#include <fs/ext2fs/ext2_journal_debug.h>
+
 SDT_PROVIDER_DECLARE(ext2fs);
 /*
  * ext2fs trace probe:
@@ -261,7 +263,15 @@ ext2_itimes(struct vnode *vp)
 static int
 ext2_create(struct vop_create_args *ap)
 {
+	struct ext2mount *ump;
+	struct ext2fs_journal *jrnp;
 	int error;
+
+	ump = VFSTOEXT2(ap->a_dvp->v_mount);
+	jrnp = ump->um_journal;
+	if (EXT2_JOURNAL_IS_PRESENT(jrnp)) {
+		EXT2_JOURNAL_START(jrnp, 100, error);
+	}
 
 	error =
 	    ext2_makeinode(MAKEIMODE(ap->a_vap->va_type, ap->a_vap->va_mode),
@@ -270,7 +280,9 @@ ext2_create(struct vop_create_args *ap)
 		return (error);
 	if ((ap->a_cnp->cn_flags & MAKEENTRY) != 0)
 		cache_enter(ap->a_dvp, *ap->a_vpp, ap->a_cnp);
-	return (0);
+
+	EXT2_JOURNAL_STOP(jrnp, error);
+	return (error);
 }
 
 static int

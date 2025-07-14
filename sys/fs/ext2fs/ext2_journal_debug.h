@@ -47,9 +47,7 @@
         const char *state_str; \
         switch ((trans)->jt_state) { \
         case EXT2_TRANS_RUNNING: state_str = "RUNNING"; break; \
-        case EXT2_TRANS_LOCKED:  state_str = "LOCKED";  break; \
         case EXT2_TRANS_FLUSH:   state_str = "FLUSH";   break; \
-        case EXT2_TRANS_COMMIT:  state_str = "COMMIT";  break; \
         default:                 state_str = "UNKNOWN"; break; \
         } \
         printf("\n=== TRANSACTION STATE ===\n"); \
@@ -142,7 +140,7 @@
 } while (0)
 
 #define EXT2_JPRINT_BUFLIST(head, name) do { \
-    struct ext2_journal_buf *jbuf; \
+    struct ext2fs_journal_buf *jbuf; \
     int count = 0; \
     printf("\n=== %s BUFFER LIST ===\n", name); \
     TAILQ_FOREACH(jbuf, (head), jb_list) { \

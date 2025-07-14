@@ -100,29 +100,13 @@ ext2_update(struct vnode *vp, int waitfor)
 		brelse(bp);
 		return (error);
 	}
+	if (EXT2_JOURNALING_IS_ACTIVE(jrnp)) {
+		EXT2_JOURNAL_DIRTY_METADATA(jrnp, bp, error);
+		return (error);
+	}
 	if (waitfor && !DOINGASYNC(vp)) {
-		if (jrnp && jrnp->jrn_active_trans != NULL) {
-			EXT2_JPRINTF("not async journal is on\n");
-			error = ext2_journal_dirty_metadata(jrnp, bp);
-			if (error) {
-				EXT2_JERROR("journal dirty metadata failed\n");
-				return (EINVAL);
-			} else {
-				return (0);
-			}
-		}
 		return (bwrite(bp));
 	} else {
-		if (jrnp && jrnp->jrn_active_trans != NULL) {
-			EXT2_JPRINTF("async: journal is on\n");
-			error = ext2_journal_dirty_metadata(jrnp, bp);
-			if (error) {
-				EXT2_JERROR("journal dirty metadata failed\n");
-				return (EINVAL);
-			} else {
-				return (0);
-			}
-		}
 		bdwrite(bp);
 		return (0);
 	}

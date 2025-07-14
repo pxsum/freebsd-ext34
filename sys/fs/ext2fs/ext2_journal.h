@@ -299,13 +299,13 @@ int ext2_journal_cancel_revoke(struct ext2fs_journal *jrnp, struct buf *bp);
 			EXT2_JERROR("journal start failed\n");   \
 	} while (0)
 
-#define EXT2_JOURNAL_STOP(jrnp, error)		       \
-	do {                                           \
-		if (jrnp) {                            \
-			(error) = ext2_journal_stop(jrnp); \
-			if ((error) != 0)                    \
-				EXT2_JERROR("journal start failed\n");\
-		}                                      \
+#define EXT2_JOURNAL_STOP(jrnp, error)                                 \
+	do {                                                           \
+		if (jrnp && jrnp->jrn_active_trans) {                  \
+			(error) = ext2_journal_stop(jrnp);             \
+			if ((error) != 0)                              \
+				EXT2_JERROR("journal start failed\n"); \
+		}                                                      \
 	} while (0)
 
 #define EXT2_JOURNALING_IS_ACTIVE(jrnp) ((jrnp) && (jrnp)->jrn_active_trans)
