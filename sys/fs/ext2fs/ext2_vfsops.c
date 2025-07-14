@@ -333,7 +333,7 @@ ext2_check_sb_compat(struct ext2fs *es, struct cdev *dev, int ronly)
 	return (0);
 }
 
-static e4fs_daddr_t
+e4fs_daddr_t
 ext2_cg_location(struct m_ext2fs *fs, int number)
 {
 	int cg, descpb, logical_sb, has_super = 0;
