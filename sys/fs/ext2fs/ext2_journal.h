@@ -201,6 +201,7 @@ struct ext2fs_journal_buf {
 	struct buf *jb_buf;
 	enum ext2fs_journal_buf_type jb_type;
 	uint32_t jb_blocknr;
+	int jb_id; /* for debugging */
 
 	/* Revoke state tracking */
 	bool jb_revoked;
@@ -313,6 +314,7 @@ int ext2_journal_cancel_revoke(struct ext2fs_journal *jrnp, struct buf *bp);
 #define EXT2_JOURNAL_DIRTY_METADATA(jrnp, bp, error)                    \
 	do {                                                            \
 		(error) = ext2_journal_dirty_metadata((jrnp), (bp));    \
+		EXT2_JPRINTF("jbuf dirtied: %d", ((struct ext2fs_journal_buf *) bp->b_fsprivate1)->jb_id); \
 		if ((error) != 0)                                       \
 			EXT2_JERROR("journal dirty metadata failed\n"); \
 	} while (0)

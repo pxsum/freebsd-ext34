@@ -144,8 +144,8 @@
     int count = 0; \
     printf("\n=== %s BUFFER LIST ===\n", name); \
     TAILQ_FOREACH(jbuf, (head), jb_list) { \
-        printf("[%d] jbuf=%p block=%u buf=%p inum=%lu\n", \
-               count++, jbuf, jbuf->jb_blocknr, jbuf->jb_buf, (uint64_t) VTOI(jbuf->jb_buf->b_vp)->i_number); \
+        printf("[%d] jbuf=%p id=%d block=%u buf=%p inum=%lu\n", \
+               count++, jbuf, jbuf->jb_id, jbuf->jb_blocknr, jbuf->jb_buf, (uint64_t) VTOI(jbuf->jb_buf->b_vp)->i_number); \
     } \
     if (count == 0) { \
         printf("(empty list)\n"); \
