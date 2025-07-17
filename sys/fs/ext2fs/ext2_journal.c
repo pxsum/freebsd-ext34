@@ -354,8 +354,8 @@ ext2_journal_walk_trans(struct ext2fs_journal *jrnp,
 						goto walk_fail;
 
 					/* Get target block and copy data */
-					real_data_buf = getblk(
-					    jrnp->jrnp_devvp, target_blknu,
+					real_data_buf = getblk(jrnp->jrnp_devvp,
+							       fsbtodb(fs, target_blknu),
 					    jrnp->jrn_blocksize, 0, 0, 0);
 					if (real_data_buf == NULL) {
 						error = ENOMEM;
@@ -1081,6 +1081,7 @@ ext2_journal_start(struct ext2fs_journal *jrnp, int nblocks)
 static int
 ext2_journal_write_desc_blocks(struct ext2fs_journal *jrnp, uint32_t *blknu)
 {
+	struct m_ext2fs *fs = jrnp->jrn_fs;
 	struct ext2fs_journal_transaction *trans = jrnp->jrn_committing_trans;
 	struct ext2fs_journal_block_header *header;
 	struct ext2fs_journal_desc_tag *tag;
@@ -1154,9 +1155,10 @@ ext2_journal_write_desc_blocks(struct ext2fs_journal *jrnp, uint32_t *blknu)
 		}
 
 		EXT2_JPRINTF("tagging block: %u, flags: 0x%x\n",
-		    jbuf->jb_blocknr, current_flags);
+			     dbtofsb(fs, jbuf->jb_blocknr), current_flags);
 
-		tag->jdt_blocknum_low = htobe32(jbuf->jb_blocknr);
+		/* write logical block nu to journal */
+		tag->jdt_blocknum_low = htobe32(dbtofsb(fs, jbuf->jb_blocknr));
 		tag->jdt_flags = htobe16(current_flags);
 		tag->jdt_checksum = 0; /* TODO: implement checksums */
 
