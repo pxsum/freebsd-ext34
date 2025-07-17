@@ -1547,25 +1547,40 @@ ext2_symlink(struct vop_symlink_args *ap)
 {
 	struct vnode *vp, **vpp = ap->a_vpp;
 	struct inode *ip;
-	int len, error;
+	struct ext2mount *ump;
+	struct ext2fs_journal *jrnp;
+	int len, error, error2;
+
+	ump = VFSTOEXT2(ap->a_dvp->v_mount);
+	jrnp = ump->um_journal;
+	if (EXT2_JOURNAL_IS_PRESENT(jrnp)) {
+		EXT2_JOURNAL_START(jrnp, 100, error);
+	}
 
 	error = ext2_makeinode(IFLNK | ap->a_vap->va_mode, ap->a_dvp,
 	    vpp, ap->a_cnp);
-	if (error)
+	if (error) {
+		EXT2_JOURNAL_STOP(jrnp, error2);
 		return (error);
+	}
 	vp = *vpp;
 	len = strlen(ap->a_target);
 	if (len < VFSTOEXT2(vp->v_mount)->um_e2fs->e2fs_maxsymlinklen) {
 		ip = VTOI(vp);
 		bcopy(ap->a_target, (char *)ip->i_shortlink, len);
 		ip->i_size = len;
-		ip->i_flag |= IN_CHANGE | IN_UPDATE;
-	} else
+		if (EXT2_JOURNALING_IS_ACTIVE(jrnp)) {
+			ext2_update(vp, 0);
+		} else {
+			ip->i_flag |= IN_CHANGE | IN_UPDATE;
+		}
+	} else {
 		error = vn_rdwr(UIO_WRITE, vp, __DECONST(void *, ap->a_target),
 		    len, (off_t)0, UIO_SYSSPACE, IO_NODELOCKED | IO_NOMACCHECK,
 		    ap->a_cnp->cn_cred, NOCRED, NULL, NULL);
 	if (error)
 		vput(vp);
+	EXT2_JOURNAL_STOP(jrnp, error);
 	return (error);
 }
 
@@ -2266,7 +2281,7 @@ ext2_write(struct vop_write_args *ap)
 
 	for (error = 0; uio->uio_resid > 0;) {
 forloop:
-		if (EXT2_JOURNAL_IS_PRESENT(jrnp)) {
+		if (EXT2_JOURNAL_IS_PRESENT(jrnp) && (vp->v_type == VDIR || vp->v_type == VLNK)) {
 			EXT2_JOURNAL_START(jrnp, 100, error);
 		}
 		lbn = lblkno(fs, uio->uio_offset);
@@ -2325,7 +2340,7 @@ forloop:
 		vfs_bio_set_flags(bp, ioflag);
 
 		/* If journaling is active and we are updating metadata, journal */
-		if (EXT2_JOURNALING_IS_ACTIVE(jrnp) && vp->v_type == VDIR) {
+		if (EXT2_JOURNALING_IS_ACTIVE(jrnp) && (vp->v_type == VDIR || vp->v_type == VLNK)) {
 			EXT2_JOURNAL_DIRTY_METADATA(jrnp, bp, error);
 			if (error) {
 				brelse(bp);
@@ -2388,7 +2403,7 @@ jrnpath:
 		if (ioflag & IO_SYNC)
 			error = ext2_update(vp, 1);
 	}
-	if (EXT2_JOURNALING_IS_ACTIVE(jrnp) && vp->v_type == VDIR) {
+	if (EXT2_JOURNALING_IS_ACTIVE(jrnp) && (vp->v_type == VDIR || vp->v_type == VLNK)) {
 		EXT2_JOURNAL_STOP(jrnp, error);
 	}
 	if (uio->uio_resid > 0)
