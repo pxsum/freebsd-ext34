@@ -39,6 +39,7 @@ MALLOC_DECLARE(M_EXT2NODE);
 #endif
 
 struct vnode;
+TAILQ_HEAD(orphan_list_head, inode);
 
 /* This structure describes the ext2fs specific mount structure data. */
 struct ext2mount {
@@ -48,6 +49,7 @@ struct ext2mount {
 
 	struct	m_ext2fs *um_e2fs;		/* EXT2FS */
 	struct	ext2fs_journal *um_journal;
+	struct	orphan_list_head um_orphan_list; /* Head of the orphan list */
 
 	u_long	um_nindir;			/* indirect ptrs per block */
 	u_long	um_bptrtodb;			/* indir ptr to disk block */

@@ -120,6 +120,7 @@ struct inode {
 	struct ext4_extent_cache i_ext_cache; /* cache for ext4 extent */
 
 	struct vn_clusterw i_clusterw;	/* Buffer clustering information */
+	TAILQ_ENTRY(inode) i_orphan_list;
 };
 
 /*
