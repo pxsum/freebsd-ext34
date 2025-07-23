@@ -81,7 +81,6 @@ SDT_PROBE_DEFINE1(ext2fs, , vfsops, ext2_compute_sb_data_error, "char*");
 static int	ext2_flushfiles(struct mount *mp, int flags, struct thread *td);
 static int	ext2_mountfs(struct vnode *, struct mount *);
 static int	ext2_reload(struct mount *mp, struct thread *td);
-static int	ext2_sbupdate(struct ext2mount *, int);
 static int	ext2_cgupdate(struct ext2mount *, int);
 static vfs_unmount_t		ext2_unmount;
 static vfs_root_t		ext2_root;
