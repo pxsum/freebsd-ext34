@@ -689,7 +689,12 @@ ext2_remove(struct vop_remove_args *ap)
 	struct inode *ip;
 	struct vnode *vp = ap->a_vp;
 	struct vnode *dvp = ap->a_dvp;
+	struct ext2mount *ump;
+	struct ext2fs_journal *jrnp;
 	int error;
+
+	ump = VFSTOEXT2(ap->a_dvp->v_mount);
+	jrnp = ump->um_journal;
 
 	ip = VTOI(vp);
 	if ((ip->i_flags & (NOUNLINK | IMMUTABLE | APPEND)) ||
@@ -697,12 +702,25 @@ ext2_remove(struct vop_remove_args *ap)
 		error = EPERM;
 		goto out;
 	}
+	if (EXT2_JOURNAL_IS_PRESENT(jrnp)) {
+		EXT2_JOURNAL_START(jrnp, 100, error);
+	}
 	error = ext2_dirremove(dvp, ap->a_cnp);
 	if (error == 0) {
 		ip->i_nlink--;
 		ip->i_flag |= IN_CHANGE;
 	}
+	if (EXT2_JOURNALING_IS_ACTIVE(jrnp)) {
+		ext2_update(vp, 1);
+		if (ip->i_nlink == 0) {
+			error = ext2_journal_add_to_orphan_list(vp);
+			if (error) {
+				EXT2_JERROR("adding to orphan_list\n");
+			}
+		}
+	}
 out:
+	EXT2_JOURNAL_STOP(jrnp, error);
 	return (error);
 }
 
