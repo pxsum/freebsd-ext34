@@ -1419,11 +1419,12 @@ ext2_fhtovp(struct mount *mp, struct fid *fhp, int flags, struct vnode **vpp)
 /*
  * Write a superblock and associated information back to disk.
  */
-static int
+int
 ext2_sbupdate(struct ext2mount *mp, int waitfor)
 {
 	struct m_ext2fs *fs = mp->um_e2fs;
 	struct ext2fs *es = fs->e2fs;
+	struct ext2fs_journal *jrnp = mp->um_journal;
 	struct buf *bp;
 	int error = 0;
 
@@ -1447,10 +1448,13 @@ ext2_sbupdate(struct ext2mount *mp, int waitfor)
 
 	memcpy((char *)bp->b_data + SBLOCKOFFSET, (caddr_t)es,
 	    (u_int)sizeof(struct ext2fs));
-	if (waitfor == MNT_WAIT)
+	if (EXT2_JOURNALING_IS_ACTIVE(jrnp)) {
+		EXT2_JOURNAL_DIRTY_METADATA(jrnp, bp, error);
+	} else if (waitfor == MNT_WAIT) {
 		error = bwrite(bp);
-	else
+	} else {
 		bawrite(bp);
+	}
 
 	/*
 	 * The buffers for group descriptors, inode bitmaps and block bitmaps
