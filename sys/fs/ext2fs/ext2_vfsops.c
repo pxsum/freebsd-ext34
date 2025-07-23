@@ -942,6 +942,7 @@ ext2_mountfs(struct vnode *devvp, struct mount *mp)
 		}
 	}
 
+	TAILQ_INIT(&ump->um_orphan_list);
 	brelse(bp);
 	bp = NULL;
 	fs = ump->um_e2fs;
