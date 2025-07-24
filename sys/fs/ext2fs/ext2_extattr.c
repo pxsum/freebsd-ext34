@@ -43,6 +43,8 @@
 #include <fs/ext2fs/ext2fs.h>
 #include <fs/ext2fs/inode.h>
 #include <fs/ext2fs/ext2_dinode.h>
+#include <fs/ext2fs/ext2_journal.h>
+#include <fs/ext2fs/ext2_journal_debug.h>
 #include <fs/ext2fs/ext2_mount.h>
 #include <fs/ext2fs/ext2_extattr.h>
 #include <fs/ext2fs/ext2_extern.h>
@@ -1215,9 +1217,11 @@ int ext2_extattr_free(struct inode *ip)
 	struct m_ext2fs *fs;
 	struct buf *bp;
 	struct ext2fs_extattr_header *header;
+	struct ext2fs_journal *jrnp;
 	int error;
 
 	fs = ip->i_e2fs;
+	jrnp = ip->i_ump->um_journal;
 
 	if (!ip->i_facl)
 		return (0);
@@ -1243,9 +1247,14 @@ int ext2_extattr_free(struct inode *ip)
 		return (error);
 	}
 
+	EXT2_JOURNAL_START(jrnp, 100, error);
 	if (le32toh(header->h_refcount) > 1) {
 		header->h_refcount = htole32(le32toh(header->h_refcount) - 1);
-		bwrite(bp);
+		if (EXT2_JOURNALING_IS_ACTIVE(jrnp)) {
+			EXT2_JOURNAL_DIRTY_METADATA(jrnp, bp, error);
+		} else {
+			bwrite(bp);
+		}
 	} else {
 		ext2_blkfree(ip, ip->i_facl, ip->i_e2fs->e2fs_bsize);
 		brelse(bp);
@@ -1254,6 +1263,7 @@ int ext2_extattr_free(struct inode *ip)
 	ip->i_blocks -= btodb(ip->i_e2fs->e2fs_bsize);
 	ip->i_facl = 0;
 	ext2_update(ip->i_vnode, 1);
+	EXT2_JOURNAL_STOP(jrnp, error);
 
-	return (0);
+	return (error);
 }
