@@ -1311,11 +1311,9 @@ ext2_nodealloccg(struct inode *ip, int cg, daddr_t ipref, int mode)
 {
 	struct m_ext2fs *fs;
 	struct buf *bp;
-	struct buf *gdbp;
 	struct ext2mount *ump;
 	struct ext2fs_journal *jrnp;
 	int error, start, len, ifree, ibytes;
-	int gdb_num, desc_per_blk;
 	char *ibp, *loc;
 
 	ipref--;	/* to avoid a lot of (ipref -1) */
@@ -1414,18 +1412,13 @@ gotit:
 	EXT2_UNLOCK(ump);
 	ext2_gd_i_bitmap_csum_set(fs, cg, bp);
 	if (EXT2_JOURNALING_IS_ACTIVE(jrnp)) {
-		/* Journal the bitmap update */
+		/* journal bitmap and cg update */
 		EXT2_JOURNAL_DIRTY_METADATA(jrnp, bp, error);
-
-		/* Update the in-mem dg block and journal it */
-		desc_per_blk = fs->e2fs_bsize / sizeof(struct ext2_gd);
-		gdb_num = cg / desc_per_blk;
-		gdbp = getblk(ip->i_devvp,
-		    fsbtodb(fs, ext2_cg_location(fs, gdb_num)), fs->e2fs_bsize,
-		    0, 0, 0);
-		memcpy(gdbp->b_data, &fs->e2fs_gd[gdb_num * desc_per_blk],
-		    fs->e2fs_bsize);
-		EXT2_JOURNAL_DIRTY_METADATA(jrnp, gdbp, error);
+		error = ext2_cgupdate_one(ump, cg, 1);
+		if (error) {
+			bdwrite(bp);
+			return (0);
+		}
 	} else {
 		bdwrite(bp);
 	}
