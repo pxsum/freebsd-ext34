@@ -1452,6 +1452,10 @@ ext2_blkfree(struct inode *ip, e4fs_daddr_t bno, long size)
 	if (error) {
 		return;
 	}
+
+	/* add block to journal revoke list */
+	ext2_journal_revoke_block(jrnp, bno);
+
 	bbp = (char *)bp->b_data;
 	bno = dtogd(fs, bno);
 	if (isclr(bbp, bno)) {
@@ -1467,7 +1471,16 @@ ext2_blkfree(struct inode *ip, e4fs_daddr_t bno, long size)
 	fs->e2fs_fmod = 1;
 	EXT2_UNLOCK(ump);
 	ext2_gd_b_bitmap_csum_set(fs, cg, bp);
-	bdwrite(bp);
+
+	if (EXT2_JOURNALING_IS_ACTIVE(jrnp)) {
+		/* journal bit map update and cylinder group update */
+		EXT2_JOURNAL_DIRTY_METADATA(jrnp, bp, error);
+		if (error)
+			bdwrite(bp);
+		ext2_cgupdate_one(ump, cg, 1);
+	} else {
+		bdwrite(bp);
+	}
 }
 
 /*
