@@ -67,6 +67,8 @@ static void ext2_journal_revoke_table_clear(
     struct ext2fs_journal_revoke_table *table);
 static void ext2_journal_revoke_list_clear(
     struct ext2fs_journal_revoke_list *list);
+static void ext2_journal_cancel_revoke(struct ext2fs_journal_transaction *trans,
+    struct ext2fs_journal_buf *jbuf);
 static int ext2_journal_write_revoke_block(struct ext2fs_journal *jrnp,
     struct ext2fs_journal_revoke_list *revoke_list, uint32_t *blknu);
 static int ext2_journal_process_revoke_block(struct ext2fs_journal *jrnp,
@@ -633,6 +635,8 @@ ext2_journal_close(struct ext2fs_journal *jrnp)
 	cv_destroy(&jrnp->jrn_trans_block_cv);
 	cv_destroy(&jrnp->jrn_space_cv);
 
+	jrnp->jrn_em->um_journal = NULL;
+
 	free(jrnp, M_EXT2JOURNAL);
 	return (0);
 }
@@ -668,6 +672,7 @@ ext2_journal_open(struct mount *mp, struct ext2fs_journal **jrnpp)
 	}
 
 	(*jrnpp)->jrn_fs = fs;
+	(*jrnpp)->jrn_em = ump;
 	error = ext2_journal_init(*jrnpp);
 	if (error != 0) {
 		EXT2_JERROR("failed initialize journal. error: %d\n", error);
@@ -774,6 +779,18 @@ ext2_journal_buf_free_list(struct ext2_journal_buf_list *head)
 		TAILQ_REMOVE(head, jbuf, jb_list);
 		ext2_journal_buf_free(jbuf);
 	}
+}
+
+static struct ext2fs_journal_buf *
+ext2_journal_find_jbuf(struct ext2fs_journal_transaction *trans,
+    uint32_t blocknr)
+{
+	struct ext2fs_journal_buf *jbuf;
+	TAILQ_FOREACH(jbuf, &trans->jt_metadata_buffers, jb_list) {
+		if (jbuf->jb_blocknr == blocknr)
+			return (jbuf);
+	}
+	return (NULL);
 }
 
 /*
@@ -910,20 +927,14 @@ ext2_journal_dirty_metadata(struct ext2fs_journal *jrnp, struct buf *bp)
 		return (EINVAL);
 	}
 
-	/* Check if buffer already tracked */
-	TAILQ_FOREACH(jbuf, &trans->jt_metadata_buffers, jb_list) {
-		KASSERT(jbuf->jb_buf != NULL, "NULL jbuf buf ref");
-		if (jbuf->jb_buf == bp) {
-			EXT2_JPRINTF("jbuf metadata found\n");
-			jbuf->jb_id = id;
-			id++;
-			EXT2_JPRINTF("jbuf metadata id: %d\n", id);
-			EXT2_JPRINT_JBUF(jbuf);
-			mtx_unlock(&jrnp->jrn_lock);
-			bqrelse(bp);
-			EXT2_JTRACE_EXIT(0);
-			return (0);
-		}
+	jbuf = (struct ext2fs_journal_buf *) bp->b_fsprivate1;
+	if (jbuf != NULL && jbuf->jb_owning_trans == trans) {
+		if (jbuf->jb_revoke_entry != NULL)
+			ext2_journal_cancel_revoke(trans, jbuf);
+
+		mtx_unlock(&jrnp->jrn_lock);
+		bqrelse(bp);
+		return(0);
 	}
 
 
@@ -1734,29 +1745,6 @@ ext2_journal_revoke_table_clear(struct ext2fs_journal_revoke_table *table)
 	table->rt_record_count = 0;
 }
 
-static int
-ext2_journal_revoke_list_add(struct ext2fs_journal_revoke_list *list, struct buf *bp)
-{
-	struct ext2fs_journal_buf *jbuf;
-	struct ext2fs_journal_revoke_entry *entry;
-
-	jbuf = bp->b_fsprivate1;
-
-	/* Check if already in list */
-	if (jbuf->revoke_entry != NULL) {
-		return (0);
-	}
-
-	entry = malloc(sizeof(struct ext2fs_journal_revoke_entry), M_EXT2REVOKE,
-	    M_WAITOK | M_ZERO);
-	entry->jre_blocknr = bp->b_blkno;
-	jbuf->revoke_entry = entry;
-
-	TAILQ_INSERT_TAIL(list, entry, jre_list);
-
-	return (0);
-}
-
 static void
 ext2_journal_revoke_list_clear(struct ext2fs_journal_revoke_list *list)
 {
@@ -1883,66 +1871,65 @@ ext2_journal_write_revoke_block(struct ext2fs_journal *jrnp,
 }
 
 int
-ext2_journal_revoke_buf(struct ext2fs_journal *jrnp, struct buf *bp)
-{
-	struct ext2fs_journal_transaction *trans;
-	struct ext2fs_journal_buf *jbuf;
-	uint32_t sequence;
-	int error;
-
-	mtx_lock(&jrnp->jrn_lock);
-	trans = jrnp->jrn_active_trans;
-
-	if (trans == NULL || trans->jt_owner != curthread) {
-		mtx_unlock(&jrnp->jrn_lock);
-		return (EINVAL);
-	}
-
-
-	error = ext2_journal_revoke_list_add(&trans->jt_revoke_list, bp);
-
-	jbuf = (struct ext2fs_journal_buf *)bp->b_fsprivate1;
-	sequence = trans->jt_journal->jrn_sequence;
-	if (jbuf != NULL) {
-		EXT2_JPRINTF("Revoke a journal buf already logged\n");
-		jbuf->jb_revoked = true;
-		jbuf->jb_revoke_sequence = sequence;
-	}
-
-	mtx_unlock(&jrnp->jrn_lock);
-	return (error);
-}
-
-int
-ext2_journal_cancel_revoke(struct ext2fs_journal *jrnp, struct buf *bp)
+ext2_journal_revoke_block(struct ext2fs_journal *jrnp, uint32_t blocknu)
 {
 	struct ext2fs_journal_transaction *trans;
 	struct ext2fs_journal_buf *jbuf;
 	struct ext2fs_journal_revoke_entry *entry;
+	int error = 0;
 
-	mtx_lock(&jrnp->jrn_lock);
+	if (jrnp == NULL) {
+		return (0);
+	}
+	EXT2_JRN_LOCK(jrnp);
 	trans = jrnp->jrn_active_trans;
 
-	if (trans == NULL || trans->jt_owner != curthread) {
-		mtx_unlock(&jrnp->jrn_lock);
+	if (trans == NULL) {
+		EXT2_JRN_UNLOCK(jrnp);
 		return (EINVAL);
 	}
 
-	/*Remove from revoke list */
-	jbuf = (struct ext2fs_journal_buf *) bp->b_fsprivate1;
-	entry = jbuf->revoke_entry;
+	/* Check if already revoked */
+	/* I believe the ordering of the revoke blocks would matter in full
+	 * journaling mode but I don't think it matters for ordered mode */
+	TAILQ_FOREACH(entry, &trans->jt_revoke_list, jre_list) {
+		if (entry->jre_blocknr == blocknu) {
+			EXT2_JRN_UNLOCK(jrnp);
+			return (0);
+		}
+	}
+
+	entry = malloc(sizeof(*entry), M_EXT2REVOKE, M_WAITOK | M_ZERO);
+	entry->jre_blocknr = blocknu;
+	TAILQ_INSERT_TAIL(&trans->jt_revoke_list, entry, jre_list);
+
+	/* check if this block is a journaled metadata block */
+	jbuf = ext2_journal_find_jbuf(trans, blocknu);
+	if (jbuf) {
+		jbuf->jb_revoked = true;
+		jbuf->jb_revoke_entry = entry;
+	}
+
+	EXT2_JRN_UNLOCK(jrnp);
+	return (error);
+}
+
+static void
+ext2_journal_cancel_revoke(struct ext2fs_journal_transaction *trans,
+    struct ext2fs_journal_buf *jbuf)
+{
+	struct ext2fs_journal_revoke_entry *entry;
+
+	entry = jbuf->jb_revoke_entry;
+	if (entry == NULL)
+		return;
+
 	TAILQ_REMOVE(&trans->jt_revoke_list, entry, jre_list);
 	free(entry, M_EXT2REVOKE);
 
-	/* Update jbuf revoke state */
-	jbuf = bp->b_fsprivate1;
-	if (jbuf !=  NULL) {
-		jbuf->jb_revoked = false;
-		jbuf->jb_revoke_sequence = 0;
-	}
-
-	mtx_unlock(&jrnp->jrn_lock);
-	return (0);
+	jbuf->jb_revoked = false;
+	jbuf->jb_revoke_sequence = 0;
+	jbuf->jb_revoke_entry = NULL;
 }
 
 static bool ext2_journal_is_block_revoked(struct ext2fs_journal_revoke_table *table,
@@ -1959,9 +1946,10 @@ static bool ext2_journal_is_block_revoked(struct ext2fs_journal_revoke_table *ta
 	LIST_FOREACH(record, &table->jrt_hash[hash_idx], jrr_hash) {
 		if (record->jrr_blocknr == blocknr) {
 			/*
-			 * The block is considered revoked if the revoke record's
-			 * sequence number is greater than or equal to the sequence
-			 * of the transaction we are considering for replay.
+			 * The block is considered revoked if the revoke
+			 * record's sequence number is greater than or equal to
+			 * the sequence of the transaction we are considering
+			 * for replay.
 			 */
 			if (record->jrr_sequence >= sequence) {
 				return (true);

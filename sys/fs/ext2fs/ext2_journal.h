@@ -206,7 +206,7 @@ struct ext2fs_journal_buf {
 	/* Revoke state tracking */
 	bool jb_revoked;
 	uint32_t jb_revoke_sequence;
-	struct ext2fs_journal_revoke_entry *revoke_entry;
+	struct ext2fs_journal_revoke_entry *jb_revoke_entry;
 };
 
 TAILQ_HEAD(ext2_journal_buf_list, ext2fs_journal_buf);
@@ -246,6 +246,7 @@ struct m_ext2fs;
  */
 TAILQ_HEAD(ext2fs_journal_checkpoint_list, ext2fs_journal_transaction);
 struct ext2fs_journal {
+	struct ext2mount *jrn_em;
 	struct vnode *jrn_vp;
 	struct vnode *jrnp_devvp;
 	struct m_ext2fs *jrn_fs;
@@ -288,8 +289,7 @@ void ext2_journal_block_new_tran(struct ext2fs_journal *jrnp);
 int ext2_journal_force_commit(struct ext2fs_journal *jrnp);
 int ext2_journal_checkpoint_trans(struct ext2fs_journal *jrnp);
 
-int ext2_journal_revoke_buf(struct ext2fs_journal *jrnp, struct buf *bp);
-int ext2_journal_cancel_revoke(struct ext2fs_journal *jrnp, struct buf *bp);
+int ext2_journal_revoke_block(struct ext2fs_journal *jrnp, uint32_t blocknu);
 
 int ext2_journal_add_to_orphan_list(struct vnode *vp);
 int ext2_journal_del_from_orphan_list(struct vnode *vp);
