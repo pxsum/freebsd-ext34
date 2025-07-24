@@ -1594,3 +1594,62 @@ ext2_cg_has_sb(struct m_ext2fs *fs, int cg)
 			return (1);
 	return (0);
 }
+
+/*
+ * Write a single cylinder group descriptor to disk.
+ *
+ * The logic is mainly from ext2_cgupdate, but this only updates
+ * one cg.
+ */
+int
+ext2_cgupdate_one(struct ext2mount *mp, int cg, int waitfor)
+{
+	struct m_ext2fs *fs = mp->um_e2fs;
+	struct ext2fs_journal *jrnp = mp->um_journal;
+	struct buf *bp;
+	int i, j, g_count, error = 0;
+	int gd_per_block, target_block;
+
+	/* FIXME should i update sb too? */
+	// allerror = ext2_sbupdate(mp, waitfor);
+
+	/* Update gd csums */
+	if (EXT2_HAS_RO_COMPAT_FEATURE(fs, EXT2F_ROCOMPAT_GDT_CSUM) ||
+	    EXT2_HAS_RO_COMPAT_FEATURE(fs, EXT2F_ROCOMPAT_METADATA_CKSUM))
+		ext2_gd_csum_set(fs);
+
+	/* Determine which block contains the target cg */
+	if (EXT2_HAS_INCOMPAT_FEATURE(fs, EXT2F_INCOMPAT_64BIT)) {
+		gd_per_block = fs->e2fs_bsize / sizeof(struct ext2_gd);
+		target_block = cg / gd_per_block;
+	} else {
+		gd_per_block = fs->e2fs_bsize / E2FS_REV0_GD_SIZE;
+		target_block = cg / gd_per_block;
+	}
+
+	/* Only process the one block containing our cg */
+	i = target_block;
+	bp = getblk(mp->um_devvp, fsbtodb(fs, ext2_cg_location(fs, i)),
+	    fs->e2fs_bsize, 0, 0, 0);
+	if (EXT2_HAS_INCOMPAT_FEATURE(fs, EXT2F_INCOMPAT_64BIT)) {
+		memcpy(bp->b_data,
+		    &fs->e2fs_gd[i * fs->e2fs_bsize / sizeof(struct ext2_gd)],
+		    fs->e2fs_bsize);
+	} else {
+		g_count = i * gd_per_block;
+		for (j = 0; j < fs->e2fs_bsize / E2FS_REV0_GD_SIZE &&
+		     g_count < fs->e2fs_gcount;
+		     j++, g_count++)
+			memcpy(bp->b_data + j * E2FS_REV0_GD_SIZE,
+			    &fs->e2fs_gd[g_count], E2FS_REV0_GD_SIZE);
+	}
+	if (EXT2_JOURNALING_IS_ACTIVE(jrnp)) {
+		EXT2_JOURNAL_DIRTY_METADATA(jrnp, bp, error);
+	} else if (waitfor == MNT_WAIT) {
+		error = bwrite(bp);
+	} else {
+		bawrite(bp);
+	}
+
+	return (error);
+}
