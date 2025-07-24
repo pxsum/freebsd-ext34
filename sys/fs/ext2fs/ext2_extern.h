@@ -133,6 +133,7 @@ int	ext2_gd_csum_verify(struct m_ext2fs *, struct cdev *);
 void	ext2_gd_csum_set(struct m_ext2fs *);
 e4fs_daddr_t	ext2_cg_location(struct m_ext2fs *fs, int number);
 int	ext2_sbupdate(struct ext2mount *, int);
+int	ext2_cgupdate_one(struct ext2mount *mp, int cg, int waitfor);
 void	ext2_jsb_from_disk(struct ext2fs_journal_sb *host_jsb,
     struct ext2fs_journal_sb *disk_jsb);
 void	ext2_jsb_to_disk(struct ext2fs_journal_sb *disk_jsb,
