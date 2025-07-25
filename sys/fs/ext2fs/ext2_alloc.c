@@ -1004,12 +1004,14 @@ ext2_alloccg(struct inode *ip, int cg, daddr_t bpref, int size)
 	struct m_ext2fs *fs;
 	struct buf *bp;
 	struct ext2mount *ump;
+	struct ext2fs_journal *jrnp;
 	daddr_t bno, runstart, runlen;
 	int bit, loc, end, error, start;
 	char *bbp;
 	/* XXX ondisk32 */
 	fs = ip->i_e2fs;
 	ump = ip->i_ump;
+	jrnp = ump->um_journal;
 	if (e2fs_gd_get_nbfree(&fs->e2fs_gd[cg]) == 0)
 		return (0);
 
@@ -1135,7 +1137,12 @@ gotit:
 	fs->e2fs_fmod = 1;
 	EXT2_UNLOCK(ump);
 	ext2_gd_b_bitmap_csum_set(fs, cg, bp);
-	bdwrite(bp);
+	if (EXT2_JOURNALING_IS_ACTIVE(jrnp)) {
+		EXT2_JOURNAL_DIRTY_METADATA(jrnp, bp, error);
+		ext2_cgupdate_one(ump, cg, 1);
+	} else {
+		bdwrite(bp);
+	}
 	return (((uint64_t)cg) * fs->e2fs_fpg +
 	    le32toh(fs->e2fs->e2fs_first_dblock) + bno);
 
@@ -1435,11 +1442,13 @@ ext2_blkfree(struct inode *ip, e4fs_daddr_t bno, long size)
 	struct m_ext2fs *fs;
 	struct buf *bp;
 	struct ext2mount *ump;
+	struct ext2fs_journal *jrnp;
 	int cg, error;
 	char *bbp;
 
 	fs = ip->i_e2fs;
 	ump = ip->i_ump;
+	jrnp = ump->um_journal;
 	cg = dtog(fs, bno);
 	if (bno >= fs->e2fs_bcount) {
 		SDT_PROBE2(ext2fs, , alloc, ext2_blkfree_bad_block,

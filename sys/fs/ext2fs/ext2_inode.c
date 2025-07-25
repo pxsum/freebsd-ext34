@@ -243,6 +243,7 @@ ext2_ind_truncate(struct vnode *vp, off_t length, int flags, struct ucred *cred,
 	uint32_t newblks[EXT2_NDADDR + EXT2_NIADDR];
 #endif
 	struct m_ext2fs *fs;
+	struct ext2fs_journal *jrnp;
 	struct buf *bp;
 	int offset, size, level;
 	e4fs_daddr_t count, nblocks, blocksreleased = 0;
@@ -258,6 +259,7 @@ ext2_ind_truncate(struct vnode *vp, off_t length, int flags, struct ucred *cred,
 #endif
 
 	fs = oip->i_e2fs;
+	jrnp = oip->i_ump->um_journal;
 	osize = oip->i_size;
 	/*
 	 * Lengthen the size of the file. We must ensure that the
@@ -268,25 +270,34 @@ ext2_ind_truncate(struct vnode *vp, off_t length, int flags, struct ucred *cred,
 		if (length > oip->i_e2fs->e2fs_maxfilesize)
 			return (EFBIG);
 		vnode_pager_setsize(ovp, length);
+		if (EXT2_JOURNAL_IS_PRESENT(jrnp)) {
+			EXT2_JOURNAL_START(jrnp, 100, error);
+		}
 		offset = blkoff(fs, length - 1);
 		lbn = lblkno(fs, length - 1);
 		flags |= BA_CLRBUF;
 		error = ext2_balloc(oip, lbn, offset + 1, cred, &bp, flags);
 		if (error) {
+			EXT2_JOURNAL_STOP(jrnp, error);
 			vnode_pager_setsize(vp, osize);
 			return (error);
 		}
 		oip->i_size = length;
 		if (bp->b_bufsize == fs->e2fs_bsize)
 			bp->b_flags |= B_CLUSTEROK;
-		if (flags & IO_SYNC)
+		if (EXT2_JOURNALING_IS_ACTIVE(jrnp)) {
+			EXT2_JOURNAL_DIRTY_METADATA(jrnp, bp, error);
+		} else if (flags & IO_SYNC) {
 			bwrite(bp);
-		else if (DOINGASYNC(ovp))
+		} else if (DOINGASYNC(ovp)) {
 			bdwrite(bp);
-		else
+		} else {
 			bawrite(bp);
+		}
 		oip->i_flag |= IN_CHANGE | IN_UPDATE;
-		return (ext2_update(ovp, !DOINGASYNC(ovp)));
+		error = ext2_update(ovp, !DOINGASYNC(ovp));
+		EXT2_JOURNAL_STOP(jrnp, error);
+		return (error);
 	}
 	/*
 	 * Shorten the size of the file. If the file is not being
