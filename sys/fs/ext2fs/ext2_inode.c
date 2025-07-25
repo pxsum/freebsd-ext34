@@ -565,6 +565,8 @@ ext2_truncate(struct vnode *vp, off_t length, int flags, struct ucred *cred,
     struct thread *td)
 {
 	struct inode *ip;
+	struct ext2mount *ump;
+	struct ext2fs_journal *jrnp;
 	int error;
 
 	ASSERT_VOP_LOCKED(vp, "ext2_truncate");
@@ -573,16 +575,23 @@ ext2_truncate(struct vnode *vp, off_t length, int flags, struct ucred *cred,
 		return (EINVAL);
 
 	ip = VTOI(vp);
+	ump = ip->i_ump;
+	jrnp = ump->um_journal;
 	if (vp->v_type == VLNK &&
 	    ip->i_size < VFSTOEXT2(vp->v_mount)->um_e2fs->e2fs_maxsymlinklen) {
 #ifdef INVARIANTS
 		if (length != 0)
 			panic("ext2_truncate: partial truncate of symlink");
 #endif
+		if (EXT2_JOURNAL_IS_PRESENT(jrnp)) {
+			EXT2_JOURNAL_START(jrnp, 100, error);
+		}
 		bzero((char *)&ip->i_shortlink, (u_int)ip->i_size);
 		ip->i_size = 0;
 		ip->i_flag |= IN_CHANGE | IN_UPDATE;
-		return (ext2_update(vp, 1));
+		error = ext2_update(vp, 1);
+		EXT2_JOURNAL_STOP(jrnp, error);
+		return (error);
 	}
 	if (ip->i_size == length) {
 		ip->i_flag |= IN_CHANGE | IN_UPDATE;
