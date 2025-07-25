@@ -594,8 +594,13 @@ ext2_truncate(struct vnode *vp, off_t length, int flags, struct ucred *cred,
 		return (error);
 	}
 	if (ip->i_size == length) {
+		if (EXT2_JOURNAL_IS_PRESENT(jrnp)) {
+			EXT2_JOURNAL_START(jrnp, 100, error);
+		}
 		ip->i_flag |= IN_CHANGE | IN_UPDATE;
-		return (ext2_update(vp, 0));
+		error = ext2_update(vp, 1);
+		EXT2_JOURNAL_STOP(jrnp, error);
+		return (error);
 	}
 
 	if (ip->i_flag & IN_E4EXTENTS)
