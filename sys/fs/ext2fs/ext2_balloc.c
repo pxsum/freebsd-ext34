@@ -50,7 +50,10 @@
 #include <fs/ext2fs/ext2fs.h>
 #include <fs/ext2fs/ext2_dinode.h>
 #include <fs/ext2fs/ext2_extern.h>
+#include <fs/ext2fs/ext2_journal.h>
 #include <fs/ext2fs/ext2_mount.h>
+
+#include <fs/ext2fs/ext2_journal_debug.h>
 
 static int
 ext2_ext_balloc(struct inode *ip, uint32_t lbn, int size,
@@ -100,6 +103,7 @@ ext2_balloc(struct inode *ip, e2fs_lbn_t lbn, int size, struct ucred *cred,
 {
 	struct m_ext2fs *fs;
 	struct ext2mount *ump;
+	struct ext2fs_journal *jrnp;
 	struct buf *bp, *nbp;
 	struct vnode *vp = ITOV(ip);
 	struct indir indirs[EXT2_NIADDR + 2];
@@ -112,6 +116,7 @@ ext2_balloc(struct inode *ip, e2fs_lbn_t lbn, int size, struct ucred *cred,
 		return (EFBIG);
 	fs = ip->i_e2fs;
 	ump = ip->i_ump;
+	jrnp = ump->um_journal;
 
 	/*
 	 * check if this is a sequential block allocation.
@@ -200,7 +205,12 @@ ext2_balloc(struct inode *ip, e2fs_lbn_t lbn, int size, struct ucred *cred,
 		 * Write synchronously so that indirect blocks
 		 * never point at garbage.
 		 */
-		if ((error = bwrite(bp)) != 0) {
+		if (EXT2_JOURNALING_IS_ACTIVE(jrnp)) {
+			EXT2_JOURNAL_DIRTY_METADATA(jrnp, bp, error);
+		} else {
+			error = bwrite(bp);
+		}
+		if (error != 0) {
 			ext2_blkfree(ip, nb, fs->e2fs_bsize);
 			return (error);
 		}
@@ -244,7 +254,12 @@ ext2_balloc(struct inode *ip, e2fs_lbn_t lbn, int size, struct ucred *cred,
 		 * Write synchronously so that indirect blocks
 		 * never point at garbage.
 		 */
-		if ((error = bwrite(nbp)) != 0) {
+		if (EXT2_JOURNALING_IS_ACTIVE(jrnp)) {
+			EXT2_JOURNAL_DIRTY_METADATA(jrnp, nbp, error);
+		} else {
+			error = bwrite(nbp);
+		}
+		if (error != 0) {
 			ext2_blkfree(ip, nb, fs->e2fs_bsize);
 			brelse(bp);
 			return (error);
@@ -254,7 +269,9 @@ ext2_balloc(struct inode *ip, e2fs_lbn_t lbn, int size, struct ucred *cred,
 		 * If required, write synchronously, otherwise use
 		 * delayed write.
 		 */
-		if (flags & IO_SYNC) {
+		if (EXT2_JOURNALING_IS_ACTIVE(jrnp)) {
+			EXT2_JOURNAL_DIRTY_METADATA(jrnp, bp, error);
+		} else if (flags & IO_SYNC) {
 			bwrite(bp);
 		} else {
 			if (bp->b_bufsize == fs->e2fs_bsize)
@@ -286,7 +303,9 @@ ext2_balloc(struct inode *ip, e2fs_lbn_t lbn, int size, struct ucred *cred,
 		 * If required, write synchronously, otherwise use
 		 * delayed write.
 		 */
-		if (flags & IO_SYNC) {
+		if (EXT2_JOURNALING_IS_ACTIVE(jrnp)) {
+			EXT2_JOURNAL_DIRTY_METADATA(jrnp, bp, error);
+		} else if (flags & IO_SYNC) {
 			bwrite(bp);
 		} else {
 			if (bp->b_bufsize == fs->e2fs_bsize)
