@@ -1960,6 +1960,24 @@ static bool ext2_journal_is_block_revoked(struct ext2fs_journal_revoke_table *ta
 	return (false);
 }
 
+int
+ext2_journal_in_orphan_list(struct vnode *vp)
+{
+	struct inode *ip = VTOI(vp);
+    struct ext2mount *ump = ip->i_ump;
+    struct inode *orphan_iter;
+    int found = 0;
+
+    TAILQ_FOREACH(orphan_iter, &ump->um_orphan_list, i_orphan_list) {
+        if (orphan_iter == ip) {
+            found = 1;
+            break;
+        }
+    }
+
+    return (found);
+}
+
 /*
  * Add inode to the linked list of orphan inodes.
  *
@@ -1969,7 +1987,7 @@ static bool ext2_journal_is_block_revoked(struct ext2fs_journal_revoke_table *ta
  * Journaling should be active when called.
  */
 int
-ext2_journal_add_to_orphan_list(struct vnode *vp)
+ext2_journal_add_orphan(struct vnode *vp)
 {
 	struct inode *ip = VTOI(vp);
 	struct ext2mount *ump = ip->i_ump;
@@ -2017,7 +2035,7 @@ ext2_journal_add_to_orphan_list(struct vnode *vp)
  * 2. Updates the on-disk, singly-linked list
  */
 int
-ext2_journal_del_from_orphan_list(struct vnode *vp)
+ext2_journal_del_orphan(struct vnode *vp)
 {
 	struct inode *cur_ip = VTOI(vp);
 	struct ext2mount *ump = cur_ip->i_ump;
