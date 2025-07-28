@@ -291,8 +291,10 @@ int ext2_journal_checkpoint_trans(struct ext2fs_journal *jrnp);
 
 int ext2_journal_revoke_block(struct ext2fs_journal *jrnp, uint32_t blocknu);
 
-int ext2_journal_add_to_orphan_list(struct vnode *vp);
-int ext2_journal_del_from_orphan_list(struct vnode *vp);
+
+int ext2_journal_in_orphan_list(struct vnode *vp);
+int ext2_journal_add_orphan(struct vnode *vp);
+int ext2_journal_del_orphan(struct vnode *vp);
 
 #define EXT2_JOURNAL_IS_PRESENT(jrnp) ((jrnp) != NULL)
 
