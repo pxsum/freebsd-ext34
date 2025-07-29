@@ -871,27 +871,17 @@ ext2_journal_dirty_data(struct ext2fs_journal *jrnp, struct buf *bp)
 	}
 
 	/* Check if buffer already tracked */
-	TAILQ_FOREACH(jbuf, &trans->jt_data_buffers, jb_list) {
-		if (jbuf->jb_buf == bp) {
-			mtx_unlock(&jrnp->jrn_lock);
-			EXT2_JPRINTF("jbuf data found\n");
-			EXT2_JTRACE_EXIT(0);
-			return (0);
-		}
+	jbuf = (struct ext2fs_journal_buf *) bp->b_fsprivate1;
+	if (jbuf != NULL && jbuf->jb_owning_trans == trans) {
+		if (jbuf->jb_revoke_entry != NULL)
+			ext2_journal_cancel_revoke(trans, jbuf);
+
+		mtx_unlock(&jrnp->jrn_lock);
+		bqrelse(bp);
+		return(0);
 	}
 
 	jbuf = ext2_journal_buf_alloc(jrnp, bp, EXT2_JBUF_DATA);
-
-	/* Set up completion callback */
-	bp->b_fsprivate1 = jbuf;
-	if (bp->b_iodone != NULL) {
-		mtx_unlock(&jrnp->jrn_lock);
-		EXT2_JERROR("assumption of b_iodone being not used is wrong\n");
-		EXT2_JTRACE_EXIT(EINVAL);
-		return (EINVAL);
-	}
-	bp->b_iodone = ext2_journal_biodone;
-
 	TAILQ_INSERT_TAIL(&trans->jt_data_buffers, jbuf, jb_list);
 	trans->jt_data_count++;
 	trans->jt_pending_data++;
@@ -1436,6 +1426,7 @@ ext2_journal_commit_trans(struct ext2fs_journal *jrnp)
 	struct buf *disk_jbuf;
 	struct ext2fs_journal_sb *disk_sb;
 	struct vnode *jrn_vp = jrnp->jrn_vp;
+	struct ext2fs_journal_buf *jbuf;
 	uint32_t jrn_blknu;
 	int error = 0;
 	static bool first_commit = true;
@@ -1463,9 +1454,12 @@ ext2_journal_commit_trans(struct ext2fs_journal *jrnp)
 	/* Get starting journal block number */
 	jrn_blknu = jrnp->jrn_log_end;
 
-	/* Wait for all data I/O to finish first in ordered mode */
-	while (trans->jt_pending_data > 0) {
-		cv_wait(&trans->jt_iowait_cv, &jrnp->jrn_lock);
+	/* Wait for all data I/O to finish. */
+	TAILQ_FOREACH(jbuf, &trans->jt_data_buffers, jb_list) {
+		struct buf *bp = jbuf->jb_buf;
+		BUF_LOCK(bp, LK_EXCLUSIVE, NULL);
+		bufwait(bp);
+		BUF_UNLOCK(bp);
 	}
 
 	EXT2_JPRINTF("All data i/o to wait on done\n");
