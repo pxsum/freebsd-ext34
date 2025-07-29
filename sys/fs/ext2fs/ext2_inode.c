@@ -316,6 +316,8 @@ ext2_ind_truncate(struct vnode *vp, off_t length, int flags, struct ucred *cred,
 		EXT2_JOURNAL_STOP(jrnp, error);
 		return (error);
 	}
+	KASSERT(ext2_journal_in_orphan_list(vp),
+	    "ext2_ind_truncate: inode not in orphan list");
 	/*
 	 * Shorten the size of the file. If the file is not being
 	 * truncated to a block boundary, the contents of the
@@ -404,9 +406,12 @@ ext2_ind_truncate(struct vnode *vp, off_t length, int flags, struct ucred *cred,
 		oip->i_ib[i] = oldblks[EXT2_NDADDR + i];
 	}
 	oip->i_size = osize;
-	error = vtruncbuf(ovp, length, (int)fs->e2fs_bsize);
-	if (error && (allerror == 0))
-		allerror = error;
+	/* I think we have to skip this when journaling. */
+	if (!EXT2_JOURNAL_IS_PRESENT(jrnp)) {
+		error = vtruncbuf(ovp, length, (int)fs->e2fs_bsize);
+		if (error && (allerror == 0))
+			allerror = error;
+	}
 	vnode_pager_setsize(ovp, length);
 
 	/*
@@ -664,6 +669,8 @@ ext2_inactive(struct vop_inactive_args *ap)
 {
 	struct vnode *vp = ap->a_vp;
 	struct inode *ip = VTOI(vp);
+	struct ext2mount *ump = ip->i_ump;
+	struct ext2fs_journal *jrnp = ump->um_journal;
 	struct thread *td = curthread;
 	int mode, error = 0;
 
@@ -689,8 +696,12 @@ out:
 	/*
 	 * If we are done with the inode, reclaim it
 	 * so that it can be reused immediately.
+	 *
+	 * If journaling, we cannot recycle the vnode
+	 * yet since the changes are cached right now.
+	 * We can vrecycle at checkpoint time?
 	 */
-	if (ip->i_mode == 0)
+	if (ip->i_mode == 0 && !EXT2_JOURNAL_IS_PRESENT(jrnp))
 		vrecycle(vp);
 	return (error);
 }
