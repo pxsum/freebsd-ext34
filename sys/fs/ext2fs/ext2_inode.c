@@ -132,6 +132,7 @@ ext2_indirtrunc(struct inode *ip, daddr_t lbn, daddr_t dbn,
 	struct buf *bp;
 	struct m_ext2fs *fs = ip->i_e2fs;
 	struct vnode *vp;
+	struct ext2fs_journal *jrnp = ip->i_ump->um_journal;
 	e2fs_daddr_t *bap, *copy;
 	int i, nblocks, error = 0, allerror = 0;
 	e2fs_lbn_t nb, nlbn, last;
@@ -181,7 +182,12 @@ ext2_indirtrunc(struct inode *ip, daddr_t lbn, daddr_t dbn,
 	    (NINDIR(fs) - (last + 1)) * sizeof(e2fs_daddr_t));
 	if (last == -1)
 		bp->b_flags |= B_INVAL;
-	if (DOINGASYNC(vp)) {
+	/*
+	 * If journaling, do not journal or write zeroed block pointer yet.
+	 * If we do, there is no way to recover and redo the truncate procoess.
+	 */
+	if (EXT2_JOURNAL_IS_PRESENT(jrnp)) {
+	} else if (DOINGASYNC(vp)) {
 		bdwrite(bp);
 	} else {
 		error = bwrite(bp);
@@ -204,7 +210,10 @@ ext2_indirtrunc(struct inode *ip, daddr_t lbn, daddr_t dbn,
 				allerror = error;
 			blocksreleased += blkcount;
 		}
+		if (EXT2_JOURNAL_IS_PRESENT(jrnp))
+			EXT2_JOURNAL_START(jrnp, 2, error);
 		ext2_blkfree(ip, nb, fs->e2fs_bsize);
+		EXT2_JOURNAL_STOP(jrnp, error);
 		blocksreleased += nblocks;
 	}
 
@@ -221,6 +230,14 @@ ext2_indirtrunc(struct inode *ip, daddr_t lbn, daddr_t dbn,
 			blocksreleased += blkcount;
 		}
 	}
+	/*
+	 * Now we can journal the zeroed block pointer.
+	 */
+	if (EXT2_JOURNAL_IS_PRESENT(jrnp)) {
+		EXT2_JOURNAL_START(jrnp, 1, error);
+		EXT2_JOURNAL_DIRTY_METADATA(jrnp, bp, error);
+	}
+	EXT2_JOURNAL_STOP(jrnp, error);
 	free(copy, M_TEMP);
 	*countp = blocksreleased;
 	return (allerror);
@@ -358,8 +375,15 @@ ext2_ind_truncate(struct vnode *vp, off_t length, int flags, struct ucred *cred,
 		if (i > lastblock)
 			oip->i_db[i] = 0;
 	}
-	oip->i_flag |= IN_CHANGE | IN_UPDATE;
-	allerror = ext2_update(ovp, !DOINGASYNC(ovp));
+	/*
+	 * If journaling, we only want to zero out block pointers after the
+	 * blocks are freed. If we zero out block pointers prematurely, we
+	 * cannot redo the truncate process on mount.
+	 */
+	if (!EXT2_JOURNAL_IS_PRESENT(jrnp)) {
+		oip->i_flag |= IN_CHANGE | IN_UPDATE;
+		allerror = ext2_update(ovp, !DOINGASYNC(ovp));
+	}
 
 	/*
 	 * Having written the new inode to disk, save its new configuration
@@ -401,7 +425,10 @@ ext2_ind_truncate(struct vnode *vp, off_t length, int flags, struct ucred *cred,
 			blocksreleased += count;
 			if (lastiblock[level] < 0) {
 				oip->i_ib[level] = 0;
+				if (EXT2_JOURNAL_IS_PRESENT(jrnp))
+					EXT2_JOURNAL_START(jrnp, 100, error);
 				ext2_blkfree(oip, bn, fs->e2fs_fsize);
+				EXT2_JOURNAL_STOP(jrnp, error);
 				blocksreleased += nblocks;
 			}
 		}
@@ -411,7 +438,11 @@ ext2_ind_truncate(struct vnode *vp, off_t length, int flags, struct ucred *cred,
 
 	/*
 	 * All whole direct blocks or frags.
+	 *
+	 * Journal the direct block freeing as one.
 	 */
+	if (EXT2_JOURNAL_IS_PRESENT(jrnp))
+		EXT2_JOURNAL_START(jrnp, 12, error);
 	for (i = EXT2_NDADDR - 1; i > lastblock; i--) {
 		long bsize;
 
@@ -423,8 +454,10 @@ ext2_ind_truncate(struct vnode *vp, off_t length, int flags, struct ucred *cred,
 		ext2_blkfree(oip, bn, bsize);
 		blocksreleased += btodb(bsize);
 	}
-	if (lastblock < 0)
+	if (lastblock < 0) {
+		EXT2_JOURNAL_STOP(jrnp, error);
 		goto done;
+	}
 
 	/*
 	 * Finally, look for a change in size of the
@@ -640,6 +673,8 @@ ext2_inactive(struct vop_inactive_args *ap)
 	if (ip->i_mode == 0)
 		goto out;
 	if (ip->i_nlink <= 0) {
+		KASSERT(ext2_journal_in_orphan_list(vp),
+		    "ext2_inactive: inode not in orphan list");
 		ext2_extattr_free(ip);
 		error = ext2_truncate(vp, (off_t)0, 0, NOCRED, td);
 		ip->i_rdev = 0;
