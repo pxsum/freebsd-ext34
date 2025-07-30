@@ -1503,12 +1503,14 @@ ext2_vfree(struct vnode *pvp, ino_t ino, int mode)
 	struct inode *pip;
 	struct buf *bp;
 	struct ext2mount *ump;
+	struct ext2fs_journal *jrnp;
 	int error, cg;
 	char *ibp;
 
 	pip = VTOI(pvp);
 	fs = pip->i_e2fs;
 	ump = pip->i_ump;
+	jrnp = ump->um_journal;
 	if ((u_int)ino > fs->e2fs_ipg * fs->e2fs_gcount)
 		panic("ext2_vfree: range: devvp = %p, ino = %ju, fs = %s",
 		    pip->i_devvp, (uintmax_t)ino, fs->e2fs_fsmnt);
@@ -1528,6 +1530,9 @@ ext2_vfree(struct vnode *pvp, ino_t ino, int mode)
 		if (fs->e2fs_ronly == 0)
 			panic("ext2_vfree: freeing free inode");
 	}
+	if (EXT2_JOURNAL_IS_PRESENT(jrnp)) {
+		EXT2_JOURNAL_START(jrnp, 4, error);
+	}
 	clrbit(ibp, ino);
 	EXT2_LOCK(ump);
 	fs->e2fs_ficount++;
@@ -1541,7 +1546,21 @@ ext2_vfree(struct vnode *pvp, ino_t ino, int mode)
 	fs->e2fs_fmod = 1;
 	EXT2_UNLOCK(ump);
 	ext2_gd_i_bitmap_csum_set(fs, cg, bp);
-	bdwrite(bp);
+	if (EXT2_JOURNALING_IS_ACTIVE(jrnp)) {
+		/*
+		 * Journal inode bitmap, cg, sb, remove orphan inode from
+		 * orphan list.
+		 */
+		EXT2_JOURNAL_DIRTY_METADATA(jrnp, bp, error);
+		if (ext2_journal_in_orphan_list(pvp))
+			/* This journals the sb update.*/
+			ext2_journal_del_orphan(pvp);
+		ext2_cgupdate_one(ump, cg, 1);
+		ext2_update(pvp, 1);
+		EXT2_JOURNAL_STOP(jrnp, error);
+	} else {
+		bdwrite(bp);
+	}
 	return (0);
 }
 
