@@ -1526,10 +1526,14 @@ ext2_rmdir(struct vop_rmdir_args *ap)
 	struct vnode *dvp = ap->a_dvp;
 	struct componentname *cnp = ap->a_cnp;
 	struct inode *ip, *dp;
+	struct ext2mount *ump;
+	struct ext2fs_journal *jrnp;
 	int error;
 
 	ip = VTOI(vp);
 	dp = VTOI(dvp);
+	ump = ip->i_ump;
+	jrnp = ump->um_journal;
 
 	/*
 	 * Verify the directory is empty (and valid).
@@ -1546,6 +1550,9 @@ ext2_rmdir(struct vop_rmdir_args *ap)
 	    || (ip->i_flags & (NOUNLINK | IMMUTABLE | APPEND))) {
 		error = EPERM;
 		goto out;
+	}
+	if (EXT2_JOURNAL_IS_PRESENT(jrnp)) {
+		EXT2_JOURNAL_START(jrnp, 100, error);
 	}
 	/*
 	 * Delete reference to directory before purging
@@ -1573,6 +1580,7 @@ ext2_rmdir(struct vop_rmdir_args *ap)
 		vn_lock(vp, LK_EXCLUSIVE | LK_RETRY);
 	}
 out:
+	EXT2_JOURNAL_STOP(jrnp, error);
 	return (error);
 }
 
