@@ -2113,6 +2113,8 @@ ext2_read(struct vop_read_args *ap)
 	struct uio *uio;
 	struct m_ext2fs *fs;
 	struct buf *bp;
+	struct ext2mount *ump;
+	struct ext2fs_journal *jrnp;
 	daddr_t lbn, nextlbn;
 	off_t bytesinfile;
 	long size, xfersize, blkoffset;
@@ -2125,6 +2127,8 @@ ext2_read(struct vop_read_args *ap)
 
 	seqcount = ap->a_ioflag >> IO_SEQSHIFT;
 	ip = VTOI(vp);
+	ump = ip->i_ump;
+	jrnp = ump->um_journal;
 
 #ifdef INVARIANTS
 	if (uio->uio_rw != UIO_READ)
@@ -2210,8 +2214,15 @@ ext2_read(struct vop_read_args *ap)
 		vfs_bio_brelse(bp, ioflag);
 
 	if ((error == 0 || uio->uio_resid != orig_resid) &&
-	    (vp->v_mount->mnt_flag & (MNT_NOATIME | MNT_RDONLY)) == 0)
+	    (vp->v_mount->mnt_flag & (MNT_NOATIME | MNT_RDONLY)) == 0) {
 		ip->i_flag |= IN_ACCESS;
+		/* If journaling, journal inode access time. */
+		if (EXT2_JOURNAL_IS_PRESENT(jrnp)) {
+			EXT2_JOURNAL_START(jrnp, 100, error);
+			ext2_update(vp, 1);
+			EXT2_JOURNAL_STOP(jrnp, error);
+		}
+	}
 	return (error);
 }
 
