@@ -1958,18 +1958,18 @@ int
 ext2_journal_in_orphan_list(struct vnode *vp)
 {
 	struct inode *ip = VTOI(vp);
-    struct ext2mount *ump = ip->i_ump;
-    struct inode *orphan_iter;
-    int found = 0;
+	struct ext2mount *ump = ip->i_ump;
+	struct inode *orphan_iter;
+	int found = 0;
 
-    TAILQ_FOREACH(orphan_iter, &ump->um_orphan_list, i_orphan_list) {
-        if (orphan_iter == ip) {
-            found = 1;
-            break;
-        }
-    }
+	TAILQ_FOREACH(orphan_iter, &ump->um_orphan_list, i_orphan_list) {
+		if (orphan_iter == ip) {
+			found = 1;
+			break;
+		}
+	}
 
-    return (found);
+	return (found);
 }
 
 /*
