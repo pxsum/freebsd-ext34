@@ -1094,7 +1094,12 @@ ext2_dirremove(struct vnode *dvp, struct componentname *cnp)
 	struct inode *dp;
 	struct ext2fs_direct_2 *ep, *rep;
 	struct buf *bp;
+	struct ext2mount *ump;
+	struct ext2fs_journal *jrnp;
 	int error;
+
+	ump = VFSTOEXT2(dvp->v_mount);
+	jrnp = ump->um_journal;
 
 	dp = VTOI(dvp);
 	if (dp->i_count == 0) {
@@ -1107,7 +1112,11 @@ ext2_dirremove(struct vnode *dvp, struct componentname *cnp)
 			return (error);
 		ep->e2d_ino = 0;
 		ext2_dirent_csum_set(dp, (struct ext2fs_direct_2 *)bp->b_data);
-		error = bwrite(bp);
+		if (EXT2_JOURNALING_IS_ACTIVE(jrnp)) {
+			EXT2_JOURNAL_DIRTY_METADATA(jrnp, bp, error);
+		} else {
+			error = bwrite(bp);
+		}
 		dp->i_flag |= IN_CHANGE | IN_UPDATE;
 		return (error);
 	}
@@ -1126,10 +1135,14 @@ ext2_dirremove(struct vnode *dvp, struct componentname *cnp)
 		    le16toh(ep->e2d_reclen));
 	ep->e2d_reclen += rep->e2d_reclen;
 	ext2_dirent_csum_set(dp, (struct ext2fs_direct_2 *)bp->b_data);
-	if (DOINGASYNC(dvp) && dp->i_count != 0)
+	if (EXT2_JOURNALING_IS_ACTIVE(jrnp)) {
+		EXT2_JOURNAL_DIRTY_METADATA(jrnp, bp, error);
+		ext2_update(dvp, 1);
+	} else if (DOINGASYNC(dvp) && dp->i_count != 0) {
 		bdwrite(bp);
-	else
+	} else {
 		error = bwrite(bp);
+	}
 	dp->i_flag |= IN_CHANGE | IN_UPDATE;
 	return (error);
 }
@@ -1145,7 +1158,12 @@ ext2_dirrewrite(struct inode *dp, struct inode *ip, struct componentname *cnp)
 	struct buf *bp;
 	struct ext2fs_direct_2 *ep;
 	struct vnode *vdp = ITOV(dp);
+	struct ext2mount *ump;
+	struct ext2fs_journal *jrnp;
 	int error;
+
+	ump = dp->i_ump;
+	jrnp = ump->um_journal;
 
 	if ((error = ext2_blkatoff(vdp, (off_t)dp->i_offset, (char **)&ep,
 	    &bp)) != 0)
@@ -1157,7 +1175,10 @@ ext2_dirrewrite(struct inode *dp, struct inode *ip, struct componentname *cnp)
 	else
 		ep->e2d_type = EXT2_FT_UNKNOWN;
 	ext2_dirent_csum_set(dp, (struct ext2fs_direct_2 *)bp->b_data);
-	error = bwrite(bp);
+	if (EXT2_JOURNALING_IS_ACTIVE(jrnp))
+		EXT2_JOURNAL_DIRTY_METADATA(jrnp, bp, error);
+	else
+		error = bwrite(bp);
 	dp->i_flag |= IN_CHANGE | IN_UPDATE;
 	return (error);
 }

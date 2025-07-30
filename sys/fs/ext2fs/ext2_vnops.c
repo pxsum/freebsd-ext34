@@ -713,7 +713,7 @@ ext2_remove(struct vop_remove_args *ap)
 	if (EXT2_JOURNALING_IS_ACTIVE(jrnp)) {
 		ext2_update(vp, 1);
 		if (ip->i_nlink == 0) {
-			error = ext2_journal_add_to_orphan_list(vp);
+			error = ext2_journal_add_orphan(vp);
 			if (error) {
 				EXT2_JERROR("adding to orphan_list\n");
 			}
@@ -831,6 +831,8 @@ ext2_rename(struct vop_rename_args *ap)
 	struct componentname *fcnp = ap->a_fcnp;
 	struct inode *ip, *xp, *dp;
 	struct dirtemplate *dirbuf;
+	struct ext2mount *ump;
+	struct ext2fs_journal *jrnp;
 	int doingdirectory = 0, oldparent = 0, newparent = 0;
 	int error = 0;
 	u_char namlen;
@@ -874,6 +876,8 @@ abortit:
 		goto abortit;
 	dp = VTOI(fdvp);
 	ip = VTOI(fvp);
+	ump = ip->i_ump;
+	jrnp = ump->um_journal;
 	if (ip->i_nlink >= EXT4_LINK_MAX &&
 	    !EXT2_HAS_RO_COMPAT_FEATURE(ip->i_e2fs, EXT2F_ROCOMPAT_DIR_NLINK)) {
 		VOP_UNLOCK(fvp);
@@ -903,6 +907,10 @@ abortit:
 	}
 	vrele(fdvp);
 
+	/* Start journaling after basic checks. */
+	if (EXT2_JOURNAL_IS_PRESENT(jrnp)) {
+		EXT2_JOURNAL_START(jrnp, 100, error);
+	}
 	/*
 	 * When the target exists, both the directory
 	 * and target vnodes are returned locked.
@@ -991,6 +999,8 @@ abortit:
 			}
 			goto bad;
 		}
+		if (EXT2_JOURNALING_IS_ACTIVE(jrnp))
+			ext2_update(tdvp, 1);
 		vput(tdvp);
 	} else {
 		if (xp->i_devvp != dp->i_devvp || xp->i_devvp != ip->i_devvp)
@@ -1044,6 +1054,8 @@ abortit:
 			ext2_dec_nlink(dp);
 			dp->i_flag |= IN_CHANGE;
 		}
+		if (EXT2_JOURNALING_IS_ACTIVE(jrnp))
+			ext2_update(tdvp, 1);
 		vput(tdvp);
 		/*
 		 * Adjust the link count of the target to
@@ -1055,6 +1067,7 @@ abortit:
 		 * it above, as the remaining link would point to
 		 * a directory without "." or ".." entries.
 		 */
+		 /* TODO confirm tvp does not need to be orphaned. */
 		ext2_dec_nlink(xp);
 		if (doingdirectory) {
 			if (xp->i_nlink > 2)
@@ -1163,6 +1176,8 @@ abortit:
 		if (!error) {
 			ext2_dec_nlink(xp);
 			xp->i_flag |= IN_CHANGE;
+			if (EXT2_JOURNALING_IS_ACTIVE(jrnp))
+				ext2_update(fvp, 1);
 		}
 		xp->i_flag &= ~IN_RENAME;
 	}
@@ -1171,6 +1186,7 @@ abortit:
 	if (xp)
 		vput(fvp);
 	vrele(ap->a_fvp);
+	EXT2_JOURNAL_STOP(jrnp, error);
 	return (error);
 
 bad:
@@ -1182,11 +1198,14 @@ out:
 		ip->i_flag &= ~IN_RENAME;
 	if (vn_lock(fvp, LK_EXCLUSIVE) == 0) {
 		ext2_dec_nlink(ip);
+		if (EXT2_JOURNALING_IS_ACTIVE(jrnp))
+			ext2_update(fvp, 1);
 		ip->i_flag |= IN_CHANGE;
 		ip->i_flag &= ~IN_RENAME;
 		vput(fvp);
 	} else
 		vrele(fvp);
+	EXT2_JOURNAL_STOP(jrnp, error);
 	return (error);
 }
 
