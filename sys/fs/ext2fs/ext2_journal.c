@@ -862,31 +862,32 @@ ext2_journal_dirty_data(struct ext2fs_journal *jrnp, struct buf *bp)
 
 	EXT2_JTRACE_ENTER();
 
-	mtx_lock(&jrnp->jrn_lock);
+	EXT2_JLOCK(jrnp);
 	trans = jrnp->jrn_active_trans;
 
 	if (trans == NULL || trans->jt_owner != curthread) {
-		mtx_unlock(&jrnp->jrn_lock);
+		EXT2_JUNLOCK(jrnp);
 		return (EINVAL);
 	}
 
-	/* Check if buffer already tracked */
+	/* Check if buffer is already journaled in this trans. */
 	jbuf = (struct ext2fs_journal_buf *) bp->b_fsprivate1;
 	if (jbuf != NULL && jbuf->jb_owning_trans == trans) {
 		if (jbuf->jb_revoke_entry != NULL)
 			ext2_journal_cancel_revoke(trans, jbuf);
-
-		mtx_unlock(&jrnp->jrn_lock);
+		EXT2_JUNLOCK(jrnp);
 		bqrelse(bp);
 		return(0);
 	}
 
+	EXT2_JUNLOCK(jrnp);
 	jbuf = ext2_journal_buf_alloc(jrnp, bp, EXT2_JBUF_DATA);
+	EXT2_JLOCK(jrnp);
 	TAILQ_INSERT_TAIL(&trans->jt_data_buffers, jbuf, jb_list);
 	trans->jt_data_count++;
 	trans->jt_pending_data++;
 
-	mtx_unlock(&jrnp->jrn_lock);
+	EXT2_JUNLOCK(jrnp);
 	EXT2_JTRACE_EXIT(0);
 	return (0);
 }
@@ -907,12 +908,12 @@ ext2_journal_dirty_metadata(struct ext2fs_journal *jrnp, struct buf *bp)
 
 	EXT2_JTRACE_ENTER();
 
-	mtx_lock(&jrnp->jrn_lock);
+	EXT2_JLOCK(jrnp);
 	trans = jrnp->jrn_active_trans;
 
 	if (trans == NULL || trans->jt_owner != curthread) {
 		EXT2_JPRINTF("trans null or not current thread\n");
-		mtx_unlock(&jrnp->jrn_lock);
+		EXT2_JUNLOCK(jrnp);
 		EXT2_JTRACE_EXIT(EINVAL);
 		return (EINVAL);
 	}
@@ -922,7 +923,7 @@ ext2_journal_dirty_metadata(struct ext2fs_journal *jrnp, struct buf *bp)
 		if (jbuf->jb_revoke_entry != NULL)
 			ext2_journal_cancel_revoke(trans, jbuf);
 
-		mtx_unlock(&jrnp->jrn_lock);
+		EXT2_JUNLOCK(jrnp);
 		bqrelse(bp);
 		return(0);
 	}
@@ -973,7 +974,9 @@ ext2_journal_dirty_metadata(struct ext2fs_journal *jrnp, struct buf *bp)
 		bremfreef(bp);
 	}
 
+	EXT2_JUNLOCK(jrnp);
 	jbuf = ext2_journal_buf_alloc(jrnp, bp, EXT2_JBUF_METADATA);
+	EXT2_JLOCK(jrnp);
 	jbuf->jb_id = id;
 	id++;
 
@@ -989,7 +992,7 @@ ext2_journal_dirty_metadata(struct ext2fs_journal *jrnp, struct buf *bp)
 	/* Unlocks the buf */
 	bqrelse(bp);
 
-	mtx_unlock(&jrnp->jrn_lock);
+	EXT2_JUNLOCK(jrnp);
 	EXT2_JTRACE_EXIT(0);
 	return (0);
 }
@@ -1012,8 +1015,8 @@ ext2_journal_start(struct ext2fs_journal *jrnp, int nblocks)
 	required_blocks = nblocks + 2;
 
 	EXT2_JTRACE_ENTER();
-
-	mtx_lock(&jrnp->jrn_lock);
+retry:
+	EXT2_JLOCK(jrnp);
 	while ((trans = jrnp->jrn_active_trans) != NULL) {
 		/* Same thread so must be a nested file operation */
 		/*
@@ -1024,7 +1027,7 @@ ext2_journal_start(struct ext2fs_journal *jrnp, int nblocks)
 			trans->jt_refcount++;
 			trans->jt_blocks_reserved += nblocks;
 			jrnp->jrn_free_blocks -= nblocks;
-			mtx_unlock(&jrnp->jrn_lock);
+			EXT2_JUNLOCK(jrnp);
 			EXT2_JPRINTF("journal start joined nested operation\n");
 			EXT2_JTRACE_EXIT(0);
 			return (0);
@@ -1059,8 +1062,16 @@ ext2_journal_start(struct ext2fs_journal *jrnp, int nblocks)
 		cv_wait(&jrnp->jrn_trans_block_cv, &jrnp->jrn_lock);
 	}
 
+	EXT2_JUNLOCK(jrnp);
 	/* Start new transaction */
 	trans = ext2_journal_transaction_alloc(jrnp);
+	EXT2_JLOCK(jrnp);
+	if (jrnp->jrn_active_trans != NULL ||
+	    required_blocks > jrnp->jrn_free_blocks) {
+		EXT2_JUNLOCK(jrnp);
+		ext2_journal_transaction_free(trans);
+		goto retry;
+	}
 	trans->jt_journal = jrnp;
 	trans->jt_state = EXT2_TRANS_RUNNING;
 	trans->jt_refcount = 1;
@@ -1073,7 +1084,7 @@ ext2_journal_start(struct ext2fs_journal *jrnp, int nblocks)
 	EXT2_JPRINTF("new transaction started\n");
 
 	jrnp->jrn_active_trans = trans;
-	mtx_unlock(&jrnp->jrn_lock);
+	EXT2_JUNLOCK(jrnp);
 
 	EXT2_JTRACE_EXIT(0);
 	return (0);
@@ -1325,8 +1336,7 @@ ext2_journal_checkpoint_trans(struct ext2fs_journal *jrnp)
 	int error = 0;
 
 	EXT2_JTRACE_ENTER();
-	mtx_lock(&jrnp->jrn_lock);
-
+	EXT2_JLOCK(jrnp);
 	/*
 	 * If there's nothing to checkpoint, exit.
 	 */
@@ -1339,7 +1349,7 @@ ext2_journal_checkpoint_trans(struct ext2fs_journal *jrnp)
 		if (trans->jt_refcount > 0) {
 			//major error;
 			EXT2_JERROR("transaction is still referenced\n");
-			mtx_unlock(&jrnp->jrn_lock);
+			EXT2_JUNLOCK(jrnp);
 			EXT2_JTRACE_EXIT(EINVAL);
 			return (EINVAL);
 		}
@@ -1347,7 +1357,7 @@ ext2_journal_checkpoint_trans(struct ext2fs_journal *jrnp)
 		error = ext2_journal_checkpoint_metadata(jrnp, trans);
 		if (error) {
 			EXT2_JERROR("checkpoint metadata failed\n");
-			mtx_unlock(&jrnp->jrn_lock);
+			EXT2_JUNLOCK(jrnp);
 			EXT2_JTRACE_EXIT(EINVAL);
 			return (EINVAL);
 		}
@@ -1411,8 +1421,7 @@ unlock_and_exit:
 
 	jrnp->jrn_block_new_trans = false;
 	cv_signal(&jrnp->jrn_trans_block_cv);
-	mtx_unlock(&jrnp->jrn_lock);
-
+	EXT2_JUNLOCK(jrnp);
 	EXT2_JTRACE_EXIT(0);
 	return (0);
 }
@@ -1432,17 +1441,15 @@ ext2_journal_commit_trans(struct ext2fs_journal *jrnp)
 	static bool first_commit = true;
 
 	EXT2_JTRACE_ENTER();
-
-	mtx_lock(&jrnp->jrn_lock);
-
 	/* Ensure no active transaction while committing */
 	KASSERT(jrnp->jrn_active_trans != NULL,
 	    "ext2_journal_commit_trans: active trans\n");
 
+	EXT2_JLOCK(jrnp);
 	trans = jrnp->jrn_committing_trans;
 
 	if (trans == NULL) {
-		mtx_unlock(&jrnp->jrn_lock);
+		EXT2_JUNLOCK(jrnp);
 		EXT2_JERROR("trans to commit is NULL\n");
 		EXT2_JTRACE_EXIT(EINVAL);
 		return (EINVAL);
@@ -1455,6 +1462,7 @@ ext2_journal_commit_trans(struct ext2fs_journal *jrnp)
 	jrn_blknu = jrnp->jrn_log_end;
 
 	/* Wait for all data I/O to finish. */
+	EXT2_JUNLOCK(jrnp);
 	TAILQ_FOREACH(jbuf, &trans->jt_data_buffers, jb_list) {
 		struct buf *bp = jbuf->jb_buf;
 		BUF_LOCK(bp, LK_EXCLUSIVE, NULL);
@@ -1464,10 +1472,12 @@ ext2_journal_commit_trans(struct ext2fs_journal *jrnp)
 
 	EXT2_JPRINTF("All data i/o to wait on done\n");
 
+	EXT2_JLOCK(jrnp);
+	EXT2_JPRINTF("All data I/O completed\n");
 	trans->jt_state = EXT2_TRANS_COMMIT;
 
-	mtx_unlock(&jrnp->jrn_lock);
 
+	EXT2_JUNLOCK(jrnp);
 	if (trans->jt_metadata_count > 0) {
 		/* Write descriptor block */
 		error = ext2_journal_write_desc_blocks(jrnp, &jrn_blknu);
@@ -1534,9 +1544,11 @@ ext2_journal_commit_trans(struct ext2fs_journal *jrnp)
 
 		mtx_lock(&jrnp->jrn_lock);
 
+		EXT2_JLOCK(jrnp);
 		/* Update journal state */
 		jrnp->jrn_sequence++;
 		jrnp->jrn_log_end = jrn_blknu;
+		EXT2_JUNLOCK(jrnp);
 
 		EXT2_JPRINTF("Commit completed successfully at block: %u\n",
 		    jrn_blknu);
@@ -1545,8 +1557,7 @@ ext2_journal_commit_trans(struct ext2fs_journal *jrnp)
 		mtx_lock(&jrnp->jrn_lock);
 	}
 
-	/* Move commited trans to checkpoing queue */
-	TAILQ_INSERT_TAIL(&jrnp->jrn_checkpoint_list, trans, jt_checkpoint_entry);
+	EXT2_JLOCK(jrnp);
 	/* Move committed transaction to checkpoint queue */
 	TAILQ_INSERT_TAIL(&jrnp->jrn_checkpoint_list, trans,
 	    jt_checkpoint_entry);
@@ -1554,7 +1565,7 @@ ext2_journal_commit_trans(struct ext2fs_journal *jrnp)
 
 	/* Wake up thread waiting on commmit */
 	cv_signal(&jrnp->jrn_trans_commit_cv);
-	mtx_unlock(&jrnp->jrn_lock);
+	EXT2_JUNLOCK(jrnp);
 
 	EXT2_JTRACE_EXIT(0);
 	return (0);
@@ -1565,7 +1576,7 @@ cleanup:
 	jrnp->jrn_committing_trans = NULL;
 
 	cv_signal(&jrnp->jrn_trans_commit_cv);
-	mtx_unlock(&jrnp->jrn_lock);
+	EXT2_JUNLOCK(jrnp);
 
 	ext2_journal_transaction_free(trans);
 
@@ -1586,11 +1597,11 @@ ext2_journal_stop(struct ext2fs_journal *jrnp)
 
 	EXT2_JTRACE_ENTER();
 
-	mtx_lock(&jrnp->jrn_lock);
+	EXT2_JLOCK(jrnp);
 	trans = jrnp->jrn_active_trans;
 
 	if (trans == NULL || trans->jt_owner != td) {
-		mtx_unlock(&jrnp->jrn_lock);
+		EXT2_JUNLOCK(jrnp);
 		return (EINVAL);
 	}
 
@@ -1607,7 +1618,7 @@ ext2_journal_stop(struct ext2fs_journal *jrnp)
 		cv_signal(&jrnp->jrn_trans_start_cv);
 	}
 
-	mtx_unlock(&jrnp->jrn_lock);
+	EXT2_JUNLOCK(jrnp);
 	if (should_commit) {
 		EXT2_JPRINTF("Journal comitting\n");
 		// TODO maybe just hold lock while calling here
@@ -1875,11 +1886,11 @@ ext2_journal_revoke_block(struct ext2fs_journal *jrnp, uint32_t blocknu)
 	if (jrnp == NULL) {
 		return (0);
 	}
-	EXT2_JRN_LOCK(jrnp);
+	EXT2_JLOCK(jrnp);
 	trans = jrnp->jrn_active_trans;
 
 	if (trans == NULL) {
-		EXT2_JRN_UNLOCK(jrnp);
+		EXT2_JUNLOCK(jrnp);
 		return (EINVAL);
 	}
 
@@ -1888,7 +1899,7 @@ ext2_journal_revoke_block(struct ext2fs_journal *jrnp, uint32_t blocknu)
 	 * journaling mode but I don't think it matters for ordered mode */
 	TAILQ_FOREACH(entry, &trans->jt_revoke_list, jre_list) {
 		if (entry->jre_blocknr == blocknu) {
-			EXT2_JRN_UNLOCK(jrnp);
+			EXT2_JUNLOCK(jrnp);
 			return (0);
 		}
 	}
@@ -1904,7 +1915,7 @@ ext2_journal_revoke_block(struct ext2fs_journal *jrnp, uint32_t blocknu)
 		jbuf->jb_revoke_entry = entry;
 	}
 
-	EXT2_JRN_UNLOCK(jrnp);
+	EXT2_JUNLOCK(jrnp);
 	return (error);
 }
 
@@ -2081,23 +2092,19 @@ ext2_journal_del_orphan(struct vnode *vp)
 
 	if (prev_bp) {
 		if (EXT2_JOURNALING_IS_ACTIVE(jrnp)) {
-			EXT2_JOURNAL_DIRTY_METADATA(jrnp, prev_bp, error);
-		} else {
-			bdwrite(prev_bp);
+			error = ext2_journal_dirty_metadata(jrnp, prev_bp);
+			if (error)
+				EXT2_JERROR("journal dirty metadata failed\n");
 		}
 	}
 
 	if (!error) {
 		if (EXT2_JOURNALING_IS_ACTIVE(jrnp)) {
-			EXT2_JOURNAL_DIRTY_METADATA(jrnp, cur_bp, error);
-		} else {
-			bdwrite(cur_bp);
+			error = ext2_journal_dirty_metadata(jrnp, cur_bp);
+			if (error)
+				EXT2_JERROR("journal dirty metadata failed\n");
 		}
 	}
-
-	if (prev_bp)
-		brelse(prev_bp);
-	brelse(cur_bp);
-
+	EXT2_JPRINTF("orphan inode removed: %u", (uint32_t) cur_ip->i_number);
 	return (error);
 }
