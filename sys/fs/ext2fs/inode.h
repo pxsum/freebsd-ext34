@@ -100,6 +100,7 @@ struct inode {
 	ext_time_t	i_atime;	/* Last access time. */
 	ext_time_t	i_mtime;	/* Last modified time. */
 	ext_time_t	i_ctime;	/* Last inode change time. */
+	ext_time_t	i_dtime;	/* Deletion time or next orphaned inode. */
 	ext_time_t	i_birthtime;	/* Inode creation time. */
 	int32_t		i_mtimensec;	/* Last modified time. */
 	int32_t		i_atimensec;	/* Last access time. */

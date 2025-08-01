@@ -1965,6 +1965,7 @@ static bool ext2_journal_is_block_revoked(struct ext2fs_journal_revoke_table *ta
 	return (false);
 }
 
+// TODO lock orphan functions
 int
 ext2_journal_in_orphan_list(struct vnode *vp)
 {
@@ -1997,37 +1998,23 @@ ext2_journal_add_orphan(struct vnode *vp)
 	struct inode *ip = VTOI(vp);
 	struct ext2mount *ump = ip->i_ump;
 	struct m_ext2fs *fs = ump->um_e2fs;
-	struct ext2fs_journal *jrnp = ump->um_journal;
-	struct ext2fs_dinode *dinode;
 	uint32_t old_head_inum;
-	struct buf *bp;
 	int error;
 
-	/* TODO need to lock updating superblock? */
-
-	if ((error = bread(ip->i_devvp,
-		 fsbtodb(fs, ino_to_fsba(fs, ip->i_number)),
-		 (int)fs->e2fs_bsize, NOCRED, &bp)) != 0) {
-		brelse(bp);
-		return (error);
-	}
-	dinode = (struct ext2fs_dinode *)((char *)bp->b_data +
-	    EXT2_INODE_SIZE(fs) * ino_to_fsbo(fs, ip->i_number));
-
+	/* TODO need to lock. */
 	old_head_inum = fs->e2fs->e3fs_last_orphan;
-	dinode->e2di_dtime = old_head_inum;
+	ip->i_dtime = old_head_inum;
+	ip->i_flag |= IN_CHANGE;
+	error = ext2_update(vp, 1);
+	/* TODO better error handling. */
+	if (error)
+		EXT2_JERROR("inode update on orphan\n")
 	fs->e2fs->e3fs_last_orphan = ip->i_number;
 	fs->e2fs_fmod = 1;
-	/* TODO jouranl sb update */
-	ext2_sbupdate(ump, 1);
-
+	error = ext2_sbupdate(ump, 1);
+	if (error)
+		EXT2_JERROR("sb update on orphan\n")
 	TAILQ_INSERT_HEAD(&ump->um_orphan_list, ip, i_orphan_list);
-
-	if (EXT2_JOURNALING_IS_ACTIVE(jrnp)) {
-		EXT2_JOURNAL_DIRTY_METADATA(jrnp, bp, error);
-	} else {
-		bdwrite(bp);
-	}
 
 	return (error);
 }
@@ -2036,8 +2023,9 @@ ext2_journal_add_orphan(struct vnode *vp)
  * Deletes an inode from the orphan list.
  *
  * This function performs two operations:
- * 1. Removes the inode from the in-memory doubly-linked orphan list.
- * 2. Updates the on-disk, singly-linked list
+ * 1. Updates the on-disk, singly-linked list
+ * 2. Removes the inode from the in-memory
+ * doubly-linked orphan list.
  */
 int
 ext2_journal_del_orphan(struct vnode *vp)
@@ -2045,66 +2033,37 @@ ext2_journal_del_orphan(struct vnode *vp)
 	struct inode *cur_ip = VTOI(vp);
 	struct ext2mount *ump = cur_ip->i_ump;
 	struct m_ext2fs *fs = ump->um_e2fs;
-	struct ext2fs_journal *jrnp = ump->um_journal;
 	struct inode *prev_ip, *next_ip;
-	struct ext2fs_dinode *cur_dinode, *prev_dinode;
-	struct buf *cur_bp = NULL, *prev_bp = NULL;
+	struct timespec ts;
+	bool updatesb = false;
 	int error = 0;
 
 	prev_ip = TAILQ_PREV(cur_ip, orphan_list_head, i_orphan_list);
 	next_ip = TAILQ_NEXT(cur_ip, i_orphan_list);
-
-	if ((error = bread(cur_ip->i_devvp,
-		 fsbtodb(fs, ino_to_fsba(fs, cur_ip->i_number)),
-		 (int)fs->e2fs_bsize, NOCRED, &cur_bp)) != 0) {
-		brelse(cur_bp);
-		return (error);
-	}
-	cur_dinode = (struct ext2fs_dinode *)((char *)cur_bp->b_data +
-	    EXT2_INODE_SIZE(fs) * ino_to_fsbo(fs, cur_ip->i_number));
-
 	if (prev_ip) {
-		if ((error = bread(prev_ip->i_devvp,
-			 fsbtodb(fs, ino_to_fsba(fs, prev_ip->i_number)),
-			 (int)fs->e2fs_bsize, NOCRED, &prev_bp)) != 0) {
-			brelse(cur_bp);
-			brelse(prev_bp);
-			return (error);
-		}
-		prev_dinode = (struct ext2fs_dinode *)((char *)prev_bp->b_data +
-		    EXT2_INODE_SIZE(fs) * ino_to_fsbo(fs, prev_ip->i_number));
-	}
-
-	if (prev_ip) {
-		prev_dinode->e2di_dtime = (next_ip) ? next_ip->i_number : 0;
+		prev_ip->i_dtime = (next_ip) ? next_ip->i_number : 0;
 	} else {
-		/* Removing head orphan inode */
+		/* Removing head orphan inode. */
 		fs->e2fs->e3fs_last_orphan = (next_ip) ? next_ip->i_number : 0;
 		fs->e2fs_fmod = 1;
-		/* TODO jouranl sb update */
-		ext2_sbupdate(ump, 1);
+		updatesb = true;
 	}
-
-	/* TODO I think we should update this somewhere in truncate process */
-	cur_dinode->e2di_dtime = 0;
+	/*
+	 * The actual deletion time. Setting this to be non-zero
+	 * should be fine since the prev inode in the list no
+	 * longer points to it.
+	 */
+	cur_ip->i_dtime = ts.tv_sec;
+	/*
+	 * The order in which we update these should not matter
+	 * since they should be journaled as one atomic trans.
+	 */
+	ext2_update(prev_ip->i_vnode, 1);
+	ext2_update(cur_ip->i_vnode, 1);
+	if (updatesb)
+		ext2_sbupdate(ump, 1);
 
 	TAILQ_REMOVE(&ump->um_orphan_list, cur_ip, i_orphan_list);
-
-	if (prev_bp) {
-		if (EXT2_JOURNALING_IS_ACTIVE(jrnp)) {
-			error = ext2_journal_dirty_metadata(jrnp, prev_bp);
-			if (error)
-				EXT2_JERROR("journal dirty metadata failed\n");
-		}
-	}
-
-	if (!error) {
-		if (EXT2_JOURNALING_IS_ACTIVE(jrnp)) {
-			error = ext2_journal_dirty_metadata(jrnp, cur_bp);
-			if (error)
-				EXT2_JERROR("journal dirty metadata failed\n");
-		}
-	}
 	EXT2_JPRINTF("orphan inode removed: %u", (uint32_t) cur_ip->i_number);
 	return (error);
 }
