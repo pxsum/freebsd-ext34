@@ -76,10 +76,10 @@ static int ext2_journal_process_revoke_block(struct ext2fs_journal *jrnp,
 static bool
 ext2_journal_is_block_revoked(struct ext2fs_journal_revoke_table *table,
     uint32_t blocknr, uint32_t sequence);
+static int ext2_recover_orphan_list(struct ext2fs_journal *jrnp);
 static int ext2_journal_walk_trans(struct ext2fs_journal *jrnp,
     enum ext2fs_journal_pass_type pass, uint32_t trans_start,
     uint32_t *next_trans_start);
-
 
 /*
  * Verify if the given data block is a valid journal block.
@@ -521,6 +521,10 @@ ext2_journal_recover(struct ext2fs_journal *jrnp)
 
 		curr_trans_start = next_trans_start;
 	}
+
+	error = ext2_recover_orphan_list(jrnp);
+	if (error)
+		goto fail;
 
 	// TODO write to disk
 	jrnp->jrn_log_start = next_trans_start;
@@ -2065,5 +2069,70 @@ ext2_journal_del_orphan(struct vnode *vp)
 
 	TAILQ_REMOVE(&ump->um_orphan_list, cur_ip, i_orphan_list);
 	EXT2_JPRINTF("orphan inode removed: %u", (uint32_t) cur_ip->i_number);
+	return (error);
+}
+
+static int
+ext2_recover_orphan_list(struct ext2fs_journal *jrnp)
+{
+	struct ext2mount *ump = jrnp->jrn_em;
+	struct m_ext2fs *fs = ump->um_e2fs;
+	struct vnode *vp;
+	struct inode *ip;
+	uint32_t inum;
+	uint32_t next_inum;
+	int error = 0;
+	inum = fs->e2fs->e3fs_last_orphan;
+	if (inum != 0) {
+		EXT2_JPRINTF("Starting orphan inode recovery.\n");
+	}
+
+	while (inum != 0) {
+		EXT2_JPRINTF("Recovering orphan inode %u.\n", inum);
+		/* Get the vnode for the inode number. */
+		error = VFS_VGET(ump->um_mountp, inum, LK_EXCLUSIVE, &vp);
+		if (error) {
+			/* Is this the right thing to do? Clear the orphan list?
+			 */
+			fs->e2fs->e3fs_last_orphan = 0;
+			fs->e2fs_fmod = 1;
+			ext2_sbupdate(ump, 1);
+			return (error);
+		}
+		ip = VTOI(vp);
+		/*
+		 * Get the next orphan's inode number from the dtime field
+		 * before it's cleared during truncation.
+		 */
+		next_inum = ip->i_dtime;
+		if (ip->i_nlink > 0) {
+			ip->i_nlink = 0;
+			ip->i_flag |= IN_CHANGE;
+		}
+
+		/*
+		 * ext2_inactive will journal the orphan recovery and it
+		 * expects inode to be in in-mem orphan list.
+		 */
+		TAILQ_INSERT_HEAD(&ump->um_orphan_list, ip, i_orphan_list);
+		VOP_INACTIVE(vp);
+		inum = next_inum;
+	}
+
+	/* Complete orphan recovery. */
+	error = ext2_journal_start(jrnp, 1);
+	if (error)
+		EXT2_JERROR("failed to journal sb orphan completion.\n");
+	if (fs->e2fs->e3fs_last_orphan != 0) {
+		EXT2_JPRINTF(
+		    "Orphan list recovery complete. Updating superblock.\n");
+		fs->e2fs->e3fs_last_orphan = 0;
+		fs->e2fs_fmod = 1;
+		error = ext2_sbupdate(ump, 1);
+		if (error)
+			EXT2_JERROR(
+			    "failed to journal sb orphan completion 2.\n");
+	}
+	error = ext2_journal_stop(jrnp);
 	return (error);
 }
