@@ -189,6 +189,7 @@ ext2_ei2i(struct ext2fs_dinode *ei, struct inode *ip)
 	ip->i_atime = (signed)le32toh(ei->e2di_atime);
 	ip->i_mtime = (signed)le32toh(ei->e2di_mtime);
 	ip->i_ctime = (signed)le32toh(ei->e2di_ctime);
+	ip->i_dtime = (signed)le32toh(ei->e2di_dtime);
 	if (E2DI_HAS_XTIME(ip)) {
 		ext2_decode_extra_time(&ip->i_atime, &ip->i_atimensec,
 		    ei->e2di_atime_extra);
@@ -270,9 +271,10 @@ ext2_i2ei(struct inode *ip, struct ext2fs_dinode *ei)
 	/*
 	 * Godmar thinks: if dtime is nonzero, ext2 says this inode has been
 	 * deleted, this would correspond to a zero link count
+	 * ei->e2di_dtime = htole32(le16toh(ei->e2di_nlink) ? 0 :
+	 * 		le32toh(ei->e2di_mtime));
 	 */
-	ei->e2di_dtime = htole32(le16toh(ei->e2di_nlink) ? 0 :
-	    le32toh(ei->e2di_mtime));
+	ei->e2di_dtime = htole32(ip->i_dtime);
 	if (E2DI_HAS_XTIME(ip)) {
 		ei->e2di_ctime_extra = ext2_encode_extra_time(ip->i_ctime,
 		    ip->i_ctimensec);
