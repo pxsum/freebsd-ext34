@@ -220,25 +220,32 @@ static int
 ext2_journal_parse_desc_blk(struct ext2fs_journal *jrnp, void *data,
     uint32_t blk_size, uint32_t *tag_count, bool *has_last_tag)
 {
-	struct ext2fs_journal_sb *jsb = jrnp->jrn_sb;
-	struct ext2fs_journal_block_header *header =
-	    (struct ext2fs_journal_block_header *)data;
+	struct ext2fs_journal_sb *jsb;
+	struct ext2fs_journal_block_header *header;
 	struct ext2fs_journal_desc_tag *tag;
 	char *c_data = (char *)data;
+	uint32_t blocknum_low;
+	uint32_t stride;
+	uint16_t flags;
 	int data_index = 0;
-	int max_size = blk_size;
-	uint32_t stride = ext2_journal_tag_size(jsb);
+	int max_size;
 
 	EXT2_JTRACE_ENTER();
 
-	EXT2_JPRINTF("desc block seq num: %u\n",
-	    be32toh(header->jbh_sequence_num));
 
+	jsb = jrnp->jrn_sb;
+	header = (struct ext2fs_journal_block_header *)data;
+	stride = ext2_journal_tag_size(jsb);
 	*tag_count = 0;
 	*has_last_tag = false;
-
 	max_size = blk_size - sizeof(struct ext2fs_journal_block_header);
-	/* Account for potential descriptor tail in checksum v2 */
+
+	EXT2_JPRINTF("desc block seq num: %u\n",
+	    be32toh(header->jbh_sequence_num));
+	/*
+	 * Account for potential descriptor tail in checksum v2.
+	 * Not used right now.
+	 */
 	if (jsb->jsb_feature_incompat & EXT2_JOURNAL_INCOMPAT_CHECKSUM_V2) {
 		max_size -= sizeof(struct ext2fs_journal_desc_tail);
 	}
@@ -249,8 +256,8 @@ ext2_journal_parse_desc_blk(struct ext2fs_journal *jrnp, void *data,
 
 	while (data_index + stride <= max_size) {
 		tag = (struct ext2fs_journal_desc_tag *)(&(c_data[data_index]));
-		uint16_t flags = be16toh(tag->jdt_flags);
-		uint32_t blocknum_low = be32toh(tag->jdt_blocknum_low);
+		blocknum_low = be32toh(tag->jdt_blocknum_low);
+		flags = be16toh(tag->jdt_flags);
 
 		if (blocknum_low == 0) {
 			break;
@@ -261,13 +268,10 @@ ext2_journal_parse_desc_blk(struct ext2fs_journal *jrnp, void *data,
 		printf("desc blk: blocknum low: %u\n", blocknum_low);
 
 		(*tag_count)++;
-
 		if (flags & EXT2_JOURNAL_TAG_LAST_ENTRY) {
 			*has_last_tag = true;
 			break;
 		}
-
-		/* Move to next tag position */
 		data_index += stride;
 	}
 
