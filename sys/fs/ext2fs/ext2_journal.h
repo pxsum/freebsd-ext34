@@ -248,7 +248,7 @@ TAILQ_HEAD(ext2fs_journal_checkpoint_list, ext2fs_journal_transaction);
 struct ext2fs_journal {
 	struct ext2mount *jrn_em;
 	struct vnode *jrn_vp;
-	struct vnode *jrnp_devvp;
+	struct vnode *jrn_devvp;
 	struct m_ext2fs *jrn_fs;
 	struct ext2fs_journal_sb *jrn_sb;
 	struct ext2fs_journal_transaction *jrn_active_trans;
