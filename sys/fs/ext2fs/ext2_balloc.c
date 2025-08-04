@@ -205,7 +205,7 @@ ext2_balloc(struct inode *ip, e2fs_lbn_t lbn, int size, struct ucred *cred,
 		 * Write synchronously so that indirect blocks
 		 * never point at garbage.
 		 */
-		if (EXT2_JOURNALING_IS_ACTIVE(jrnp)) {
+		if (EXT2_JACTIVE(jrnp)) {
 			EXT2_JOURNAL_DIRTY_METADATA(jrnp, bp, error);
 		} else {
 			error = bwrite(bp);
@@ -254,7 +254,7 @@ ext2_balloc(struct inode *ip, e2fs_lbn_t lbn, int size, struct ucred *cred,
 		 * Write synchronously so that indirect blocks
 		 * never point at garbage.
 		 */
-		if (EXT2_JOURNALING_IS_ACTIVE(jrnp)) {
+		if (EXT2_JACTIVE(jrnp)) {
 			EXT2_JOURNAL_DIRTY_METADATA(jrnp, nbp, error);
 		} else {
 			error = bwrite(nbp);
@@ -269,7 +269,7 @@ ext2_balloc(struct inode *ip, e2fs_lbn_t lbn, int size, struct ucred *cred,
 		 * If required, write synchronously, otherwise use
 		 * delayed write.
 		 */
-		if (EXT2_JOURNALING_IS_ACTIVE(jrnp)) {
+		if (EXT2_JACTIVE(jrnp)) {
 			EXT2_JOURNAL_DIRTY_METADATA(jrnp, bp, error);
 		} else if (flags & IO_SYNC) {
 			bwrite(bp);
@@ -303,7 +303,7 @@ ext2_balloc(struct inode *ip, e2fs_lbn_t lbn, int size, struct ucred *cred,
 		 * If required, write synchronously, otherwise use
 		 * delayed write.
 		 */
-		if (EXT2_JOURNALING_IS_ACTIVE(jrnp)) {
+		if (EXT2_JACTIVE(jrnp)) {
 			EXT2_JOURNAL_DIRTY_METADATA(jrnp, bp, error);
 		} else if (flags & IO_SYNC) {
 			bwrite(bp);

@@ -79,7 +79,7 @@ ext2_journal_is_block_revoked(struct ext2fs_journal_revoke_table *table,
 static int ext2_recover_orphan_list(struct ext2fs_journal *jrnp);
 static int ext2_journal_walk_trans(struct ext2fs_journal *jrnp,
     enum ext2fs_journal_pass_type pass, uint32_t trans_start,
-    uint32_t *next_trans_start);
+    uint32_t *next_trans_start, uint32_t *trans_seq);
 
 /*
  * Verify if the given data block is a valid journal block.

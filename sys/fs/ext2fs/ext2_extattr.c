@@ -1250,7 +1250,7 @@ int ext2_extattr_free(struct inode *ip)
 	EXT2_JOURNAL_START(jrnp, 100, error);
 	if (le32toh(header->h_refcount) > 1) {
 		header->h_refcount = htole32(le32toh(header->h_refcount) - 1);
-		if (EXT2_JOURNALING_IS_ACTIVE(jrnp)) {
+		if (EXT2_JACTIVE(jrnp)) {
 			EXT2_JOURNAL_DIRTY_METADATA(jrnp, bp, error);
 		} else {
 			bwrite(bp);

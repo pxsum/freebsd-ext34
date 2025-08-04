@@ -1448,7 +1448,7 @@ ext2_sbupdate(struct ext2mount *mp, int waitfor)
 
 	memcpy((char *)bp->b_data + SBLOCKOFFSET, (caddr_t)es,
 	    (u_int)sizeof(struct ext2fs));
-	if (EXT2_JOURNALING_IS_ACTIVE(jrnp)) {
+	if (EXT2_JACTIVE(jrnp)) {
 		EXT2_JOURNAL_DIRTY_METADATA(jrnp, bp, error);
 	} else if (waitfor == MNT_WAIT) {
 		error = bwrite(bp);

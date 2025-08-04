@@ -1137,7 +1137,7 @@ gotit:
 	fs->e2fs_fmod = 1;
 	EXT2_UNLOCK(ump);
 	ext2_gd_b_bitmap_csum_set(fs, cg, bp);
-	if (EXT2_JOURNALING_IS_ACTIVE(jrnp)) {
+	if (EXT2_JACTIVE(jrnp)) {
 		EXT2_JOURNAL_DIRTY_METADATA(jrnp, bp, error);
 		ext2_cgupdate_one(ump, cg, 1);
 	} else {
@@ -1418,8 +1418,8 @@ gotit:
 	}
 	EXT2_UNLOCK(ump);
 	ext2_gd_i_bitmap_csum_set(fs, cg, bp);
-	if (EXT2_JOURNALING_IS_ACTIVE(jrnp)) {
-		/* journal bitmap and cg update */
+	if (EXT2_JACTIVE(jrnp)) {
+		/* journal bitmap, cg, and sb update */
 		EXT2_JOURNAL_DIRTY_METADATA(jrnp, bp, error);
 		error = ext2_cgupdate_one(ump, cg, 1);
 		if (error) {
@@ -1481,7 +1481,7 @@ ext2_blkfree(struct inode *ip, e4fs_daddr_t bno, long size)
 	EXT2_UNLOCK(ump);
 	ext2_gd_b_bitmap_csum_set(fs, cg, bp);
 
-	if (EXT2_JOURNALING_IS_ACTIVE(jrnp)) {
+	if (EXT2_JACTIVE(jrnp)) {
 		/* journal bit map update and cylinder group update */
 		EXT2_JOURNAL_DIRTY_METADATA(jrnp, bp, error);
 		if (error)
@@ -1530,7 +1530,7 @@ ext2_vfree(struct vnode *pvp, ino_t ino, int mode)
 		if (fs->e2fs_ronly == 0)
 			panic("ext2_vfree: freeing free inode");
 	}
-	if (EXT2_JOURNAL_IS_PRESENT(jrnp)) {
+	if (EXT2_JPRESENT(jrnp)) {
 		EXT2_JOURNAL_START(jrnp, 4, error);
 	}
 	clrbit(ibp, ino);
@@ -1546,7 +1546,7 @@ ext2_vfree(struct vnode *pvp, ino_t ino, int mode)
 	fs->e2fs_fmod = 1;
 	EXT2_UNLOCK(ump);
 	ext2_gd_i_bitmap_csum_set(fs, cg, bp);
-	if (EXT2_JOURNALING_IS_ACTIVE(jrnp)) {
+	if (EXT2_JACTIVE(jrnp)) {
 		/*
 		 * Journal inode bitmap, cg, sb, remove orphan inode from
 		 * orphan list.
@@ -1677,7 +1677,7 @@ ext2_cgupdate_one(struct ext2mount *mp, int cg, int waitfor)
 			memcpy(bp->b_data + j * E2FS_REV0_GD_SIZE,
 			    &fs->e2fs_gd[g_count], E2FS_REV0_GD_SIZE);
 	}
-	if (EXT2_JOURNALING_IS_ACTIVE(jrnp)) {
+	if (EXT2_JACTIVE(jrnp)) {
 		EXT2_JOURNAL_DIRTY_METADATA(jrnp, bp, error);
 	} else if (waitfor == MNT_WAIT) {
 		error = bwrite(bp);
