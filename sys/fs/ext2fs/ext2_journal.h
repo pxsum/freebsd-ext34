@@ -296,7 +296,7 @@ int ext2_journal_in_orphan_list(struct vnode *vp);
 int ext2_journal_add_orphan(struct vnode *vp);
 int ext2_journal_del_orphan(struct vnode *vp);
 
-#define EXT2_JOURNAL_IS_PRESENT(jrnp) ((jrnp) != NULL)
+#define EXT2_JPRESENT(jrnp) ((jrnp) != NULL)
 
 #define EXT2_JOURNAL_START(jrnp, nblocks, error)                 \
 	do {                                                     \
@@ -314,7 +314,7 @@ int ext2_journal_del_orphan(struct vnode *vp);
 		}                                                      \
 	} while (0)
 
-#define EXT2_JOURNALING_IS_ACTIVE(jrnp) ((jrnp) && (jrnp)->jrn_active_trans)
+#define EXT2_JACTIVE(jrnp) ((jrnp) && (jrnp)->jrn_active_trans)
 
 #define EXT2_JOURNAL_DIRTY_DATA(jrnp, bp, error)                             \
 	do {                                                                 \
