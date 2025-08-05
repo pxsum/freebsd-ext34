@@ -1247,11 +1247,15 @@ int ext2_extattr_free(struct inode *ip)
 		return (error);
 	}
 
-	EXT2_JOURNAL_START(jrnp, 100, error);
+	error = ext2_journal_start(jrnp, 100);
+	if (error) {
+	}
 	if (le32toh(header->h_refcount) > 1) {
 		header->h_refcount = htole32(le32toh(header->h_refcount) - 1);
 		if (EXT2_JACTIVE(jrnp)) {
-			EXT2_JOURNAL_DIRTY_METADATA(jrnp, bp, error);
+			error = ext2_journal_dirty_metadata(jrnp, bp);
+			if (error) {
+			}
 		} else {
 			bwrite(bp);
 		}
@@ -1263,7 +1267,8 @@ int ext2_extattr_free(struct inode *ip)
 	ip->i_blocks -= btodb(ip->i_e2fs->e2fs_bsize);
 	ip->i_facl = 0;
 	ext2_update(ip->i_vnode, 1);
-	EXT2_JOURNAL_STOP(jrnp, error);
-
+	error = ext2_journal_stop(jrnp);
+	if (error) {
+	}
 	return (error);
 }

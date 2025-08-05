@@ -1062,17 +1062,18 @@ ext2_add_entry(struct vnode *dvp, struct ext2fs_direct_2 *entry)
 	bcopy((caddr_t)entry, (caddr_t)ep, (u_int)newentrysize);
 	ext2_dirent_csum_set(dp, (struct ext2fs_direct_2 *)bp->b_data);
 	if (EXT2_JACTIVE(jrnp)) {
-		EXT2_JPRINTF("journal is on, calling dirty metadata\n");
-		EXT2_JOURNAL_DIRTY_METADATA(jrnp, bp, error);
-		return (error);
-	}
-	if (DOINGASYNC(dvp)) {
+		error = ext2_journal_dirty_metadata(jrnp, bp);
+		if (error) {
+		}
+	} else if (DOINGASYNC(dvp)) {
 		bdwrite(bp);
 		error = 0;
 	} else {
 		error = bwrite(bp);
 	}
 	dp->i_flag |= IN_CHANGE | IN_UPDATE;
+	if (EXT2_JACTIVE(jrnp))
+		ext2_update(dvp, 1);
 	return (error);
 }
 
@@ -1113,7 +1114,9 @@ ext2_dirremove(struct vnode *dvp, struct componentname *cnp)
 		ep->e2d_ino = 0;
 		ext2_dirent_csum_set(dp, (struct ext2fs_direct_2 *)bp->b_data);
 		if (EXT2_JACTIVE(jrnp)) {
-			EXT2_JOURNAL_DIRTY_METADATA(jrnp, bp, error);
+			error = ext2_journal_dirty_metadata(jrnp, bp);
+			if (error) {
+			}
 		} else {
 			error = bwrite(bp);
 		}
@@ -1136,8 +1139,12 @@ ext2_dirremove(struct vnode *dvp, struct componentname *cnp)
 	ep->e2d_reclen += rep->e2d_reclen;
 	ext2_dirent_csum_set(dp, (struct ext2fs_direct_2 *)bp->b_data);
 	if (EXT2_JACTIVE(jrnp)) {
-		EXT2_JOURNAL_DIRTY_METADATA(jrnp, bp, error);
-		ext2_update(dvp, 1);
+		error = ext2_journal_dirty_metadata(jrnp, bp);
+		if (error) {
+		}
+		error = ext2_update(dvp, 1);
+		if (error) {
+		}
 	} else if (DOINGASYNC(dvp) && dp->i_count != 0) {
 		bdwrite(bp);
 	} else {
@@ -1175,9 +1182,11 @@ ext2_dirrewrite(struct inode *dp, struct inode *ip, struct componentname *cnp)
 	else
 		ep->e2d_type = EXT2_FT_UNKNOWN;
 	ext2_dirent_csum_set(dp, (struct ext2fs_direct_2 *)bp->b_data);
-	if (EXT2_JACTIVE(jrnp))
-		EXT2_JOURNAL_DIRTY_METADATA(jrnp, bp, error);
-	else
+	if (EXT2_JACTIVE(jrnp)) {
+		error = ext2_journal_dirty_metadata(jrnp, bp);
+		if (error) {
+		}
+	} else
 		error = bwrite(bp);
 	dp->i_flag |= IN_CHANGE | IN_UPDATE;
 	return (error);

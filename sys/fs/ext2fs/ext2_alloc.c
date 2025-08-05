@@ -1138,8 +1138,12 @@ gotit:
 	EXT2_UNLOCK(ump);
 	ext2_gd_b_bitmap_csum_set(fs, cg, bp);
 	if (EXT2_JACTIVE(jrnp)) {
-		EXT2_JOURNAL_DIRTY_METADATA(jrnp, bp, error);
-		ext2_cgupdate_one(ump, cg, 1);
+		error = ext2_journal_dirty_metadata(jrnp, bp);
+		if (error) {
+		}
+		error = ext2_cgupdate_one(ump, cg, 1);
+		if (error) {
+		}
 	} else {
 		bdwrite(bp);
 	}
@@ -1420,11 +1424,14 @@ gotit:
 	ext2_gd_i_bitmap_csum_set(fs, cg, bp);
 	if (EXT2_JACTIVE(jrnp)) {
 		/* journal bitmap, cg, and sb update */
-		EXT2_JOURNAL_DIRTY_METADATA(jrnp, bp, error);
+		error = ext2_journal_dirty_metadata(jrnp, bp);
+		if (error) {
+		}
 		error = ext2_cgupdate_one(ump, cg, 1);
 		if (error) {
-			bdwrite(bp);
-			return (0);
+		}
+		error = ext2_sbupdate(ump, 1);
+		if (error) {
 		}
 	} else {
 		bdwrite(bp);
@@ -1482,11 +1489,16 @@ ext2_blkfree(struct inode *ip, e4fs_daddr_t bno, long size)
 	ext2_gd_b_bitmap_csum_set(fs, cg, bp);
 
 	if (EXT2_JACTIVE(jrnp)) {
-		/* journal bit map update and cylinder group update */
-		EXT2_JOURNAL_DIRTY_METADATA(jrnp, bp, error);
-		if (error)
-			bdwrite(bp);
-		ext2_cgupdate_one(ump, cg, 1);
+		/* Journal bit map, cylinder group, sb update. */
+		error = ext2_journal_dirty_metadata(jrnp, bp);
+		if (error) {
+		}
+		error = ext2_cgupdate_one(ump, cg, 1);
+		if (error) {
+		}
+		error = ext2_sbupdate(ump, 1);
+		if (error) {
+		}
 	} else {
 		bdwrite(bp);
 	}
@@ -1531,7 +1543,9 @@ ext2_vfree(struct vnode *pvp, ino_t ino, int mode)
 			panic("ext2_vfree: freeing free inode");
 	}
 	if (EXT2_JPRESENT(jrnp)) {
-		EXT2_JOURNAL_START(jrnp, 4, error);
+		error = ext2_journal_start(jrnp, 4);
+		if (error) {
+		}
 	}
 	clrbit(ibp, ino);
 	EXT2_LOCK(ump);
@@ -1551,13 +1565,24 @@ ext2_vfree(struct vnode *pvp, ino_t ino, int mode)
 		 * Journal inode bitmap, cg, sb, remove orphan inode from
 		 * orphan list.
 		 */
-		EXT2_JOURNAL_DIRTY_METADATA(jrnp, bp, error);
-		if (ext2_journal_in_orphan_list(pvp))
+		error = ext2_journal_dirty_metadata(jrnp, bp);
+		if (error) {
+		}
+		if (ext2_journal_in_orphan_list(pvp)) {
 			/* This journals the sb update.*/
 			ext2_journal_del_orphan(pvp);
-		ext2_cgupdate_one(ump, cg, 1);
-		ext2_update(pvp, 1);
-		EXT2_JOURNAL_STOP(jrnp, error);
+			if (error) {
+			}
+		}
+		error = ext2_cgupdate_one(ump, cg, 1);
+		if (error) {
+		}
+		error = ext2_update(pvp, 1);
+		if (error) {
+		}
+		error = ext2_journal_stop(jrnp);
+		if (error) {
+		}
 	} else {
 		bdwrite(bp);
 	}
@@ -1678,7 +1703,9 @@ ext2_cgupdate_one(struct ext2mount *mp, int cg, int waitfor)
 			    &fs->e2fs_gd[g_count], E2FS_REV0_GD_SIZE);
 	}
 	if (EXT2_JACTIVE(jrnp)) {
-		EXT2_JOURNAL_DIRTY_METADATA(jrnp, bp, error);
+		error = ext2_journal_dirty_metadata(jrnp, bp);
+		if (error) {
+		}
 	} else if (waitfor == MNT_WAIT) {
 		error = bwrite(bp);
 	} else {
