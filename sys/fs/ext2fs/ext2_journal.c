@@ -88,7 +88,7 @@ static bool
 ext2_journal_verify_block(void *data)
 {
 	struct ext2fs_journal_block_header *jrn_bhr =
-		(struct ext2fs_journal_block_header *) data;
+	    (struct ext2fs_journal_block_header *) data;
 	return (be32toh(jrn_bhr->jbh_magic) == EXT2_JOURNAL_MAGIC);
 }
 
@@ -166,6 +166,7 @@ ext2_journal_open_inode(struct mount *mp, struct vnode **vpp,
 	}
 
 	jrn_sbp = (struct ext2fs_journal_sb *) jrn_data;
+	EXT2_JPRINT_JSB(jrn_sbp);
 	if (be32toh(jrn_sbp->jsb_header.jbh_blocktype) !=
 	    EXT2_JOURNAL_FORMAT_BASIC &&
 	    be32toh(jrn_sbp->jsb_header.jbh_blocktype) !=
@@ -184,7 +185,7 @@ ext2_journal_open_inode(struct mount *mp, struct vnode **vpp,
 
 	memcpy(*jrn_sbpp, jrn_sbp, sizeof(struct ext2fs_journal_sb));
 
-	bqrelse(jrn_buf);
+	brelse(jrn_buf);
 	VOP_UNLOCK(*vpp);
 
 	EXT2_JTRACE_EXIT(0);
@@ -192,9 +193,10 @@ ext2_journal_open_inode(struct mount *mp, struct vnode **vpp,
 }
 
 static uint32_t
-ext2_journal_block_type(void *data) {
+ext2_journal_block_type(void *data)
+{
 	struct ext2fs_journal_block_header *jrn_bhr =
-		(struct ext2fs_journal_block_header *) data;
+	    (struct ext2fs_journal_block_header *) data;
 	return (be32toh(jrn_bhr->jbh_blocktype));
 }
 
@@ -259,10 +261,6 @@ ext2_journal_parse_desc_blk(struct ext2fs_journal *jrnp, void *data,
 		blocknum_low = be32toh(tag->jdt_blocknum_low);
 		flags = be16toh(tag->jdt_flags);
 
-		if (blocknum_low == 0) {
-			break;
-		}
-
 		printf("desc blk: tag num: %d\n", *tag_count);
 		printf("desc blk: tag flag: %u\n", flags);
 		printf("desc blk: blocknum low: %u\n", blocknum_low);
@@ -287,26 +285,27 @@ ext2_journal_walk_trans_tail(struct ext2fs_journal *jrnp,
 	struct ext2fs_journal_block_header *header;
 	struct vnode *vp;
 	struct m_ext2fs *fs;
-	struct buf *buf;
+	struct buf *bp;
+	void *block_data;
 	uint32_t cur_blk;
 	uint32_t block_type;
 	int error = 0;
 
-	buf = NULL;
+	bp = NULL;
 	vp = jrnp->jrn_vp;
 	fs = jrnp->jrn_fs;
 	cur_blk = start_blk;
 	for (;;) {
 		error = bread(vp, cur_blk, (daddr_t)fs->e2fs_bsize, NOCRED,
-		    &buf);
+		    &bp);
 		if (error) {
 			EXT2_JERROR("tail block read fail: %d\n", error);
 			return (error);
 		}
 
-		void *block_data = buf->b_data;
+		block_data = bp->b_data;
 		if (!ext2_journal_verify_block(block_data)) {
-			brelse(buf);
+			brelse(bp);
 			return (EINVAL);
 		}
 
@@ -314,7 +313,7 @@ ext2_journal_walk_trans_tail(struct ext2fs_journal *jrnp,
 		block_type = ext2_journal_block_type(block_data);
 
 		if (be32toh(header->jbh_sequence_num) != expected_seq) {
-			brelse(buf);
+			brelse(bp);
 			return (EINVAL);
 		}
 
@@ -323,22 +322,22 @@ ext2_journal_walk_trans_tail(struct ext2fs_journal *jrnp,
 				error = ext2_journal_process_revoke_block(jrnp,
 				    block_data, expected_seq);
 				if (error) {
-					brelse(buf);
+					brelse(bp);
 					return (error);
 				}
 			}
-			brelse(buf);
+			brelse(bp);
 			cur_blk = ext2_journal_next_block(jrnp, cur_blk);
 
 		} else if (block_type == EXT2_JOURNAL_COMMIT_BLOCK) {
-			brelse(buf);
+			brelse(bp);
 			*next_trans_start = ext2_journal_next_block(jrnp,
 			    cur_blk);
 			/* Transaction complete */
 			return (0);
 
 		} else {
-			brelse(buf);
+			brelse(bp);
 			return (EINVAL);
 		}
 	}
@@ -350,14 +349,14 @@ ext2_journal_walk_trans(struct ext2fs_journal *jrnp,
     uint32_t *next_trans_start, uint32_t *trans_seq)
 {
 	struct vnode *vp;
-	struct m_ext2fs *fs;
 	struct ext2fs_journal_desc_tag *tag;
+	struct m_ext2fs *fs;
 	struct buf *desc_buf = NULL;
 	struct buf *jrn_data_buf = NULL;
 	struct buf *real_data_buf = NULL;
 	bool has_last_tag = false;
 	bool more_desc_blocks = true;
-	uint32_t cur_blk, jrn_blk_ptr;
+	uint32_t cur_blk, jrn_blk_ptr, target_blknu;
 	uint32_t tag_offset, tag_size, blocks_in_desc;
 	uint32_t expected_seq = 0, cur_seq;
 	char *desc_data;
@@ -371,6 +370,7 @@ ext2_journal_walk_trans(struct ext2fs_journal *jrnp,
 	tag_size = ext2_journal_tag_size(jrnp->jrn_sb);
 	/* Walk all descriptor and data blocks for this transaction */
 	while (more_desc_blocks) {
+		error = bread(vp, cur_blk, (daddr_t)fs->e2fs_bsize, NOCRED,
 		    &desc_buf);
 		if (error) {
 			EXT2_JERROR("desc block read fail: %d\n", error);
@@ -420,7 +420,7 @@ expected%u, got %u\n",
 		for (uint32_t i = 0; i < blocks_in_desc; i++) {
 			tag = (struct ext2fs_journal_desc_tag *)(desc_data +
 			    tag_offset);
-			uint32_t target_blknu = be32toh(tag->jdt_blocknum_low);
+			target_blknu = be32toh(tag->jdt_blocknum_low);
 			if (pass == PASS_REPLAY) {
 				if (ext2_journal_is_block_revoked(
 					jrnp->jrn_revoke_table, target_blknu,
@@ -428,7 +428,7 @@ expected%u, got %u\n",
 					/* Skip replaying this revoked block */
 				} else {
 					/* Read journal data block */
-					error = bread(jrnp->jrn_vp, jrn_blk_ptr,
+					error = bread(vp, jrn_blk_ptr,
 					    jrnp->jrn_blocksize, NOCRED,
 					    &jrn_data_buf);
 					if (error)
@@ -729,9 +729,9 @@ ext2_journal_close(struct ext2fs_journal *jrnp)
 int
 ext2_journal_open(struct mount *mp, struct ext2fs_journal **jrnpp)
 {
-	int error;
 	struct ext2mount *ump = VFSTOEXT2(mp);
 	struct m_ext2fs *fs = ump->um_e2fs;
+	int error;
 
 	EXT2_JTRACE_ENTER();
 
@@ -820,6 +820,7 @@ ext2_journal_buf_alloc(struct ext2fs_journal *jrnp, struct buf *bp,
 	jbuf->jb_buf = bp;
 	jbuf->jb_type = type;
 	jbuf->jb_blocknr = bp->b_blkno;
+	jbuf->jb_revoked = false;
 
 	/* Faster way to find the jbuf */
 	bp->b_fsprivate1 = jbuf;
@@ -895,7 +896,7 @@ ext2_journal_transaction_alloc(struct ext2fs_journal *journal)
 	TAILQ_INIT(&trans->jt_data_buffers);
 	TAILQ_INIT(&trans->jt_metadata_buffers);
 	TAILQ_INIT(&trans->jt_revoke_list);
-	cv_init(&trans->jt_iowait_cv, "jrniowait");
+	cv_init(&trans->jt_iowait_cv, "jrn_iowait");
 
 	return (trans);
 }
@@ -1086,8 +1087,10 @@ ext2_journal_start(struct ext2fs_journal *jrnp, int nblocks)
 	struct ext2fs_journal_transaction *trans;
 	struct thread *td = curthread;
 	int required_blocks;
-
-	/* We need blocks for normal metadata/ data blocks and descriptor and commit block for journal*/
+	/*
+	 * We need blocks for normal fs blocks and
+	 * descriptor and commit block for journal.
+	 */
 	required_blocks = nblocks + 2;
 
 	EXT2_JTRACE_ENTER();
@@ -1280,32 +1283,32 @@ ext2_journal_write_desc_blocks(struct ext2fs_journal *jrnp, uint32_t *blknu)
 }
 
 static int
-ext2_journal_write_commit_blk(struct ext2fs_journal *jrnp,
-    uint32_t *blknu)
+ext2_journal_write_commit_blk(struct ext2fs_journal *jrnp, uint32_t *blknu)
 {
 	struct ext2fs_journal_commit_header *header;
-	struct buf *commit_buf;
+	struct buf *commit_bp;
 	int error;
 
 	EXT2_JTRACE_ENTER();
 
-	commit_buf = getblk(jrnp->jrn_vp, *blknu, jrnp->jrn_blocksize,
+	commit_bp = getblk(jrnp->jrn_vp, *blknu, jrnp->jrn_blocksize,
 	    0, 0, 0);
-	if (commit_buf == NULL) {
+	if (commit_bp == NULL) {
 		EXT2_JERROR("getblk failed\n");
 		EXT2_JTRACE_EXIT(EINVAL);
 		return (EINVAL);
 	}
 
-	// check if getblk memsets for us
-	memset(commit_buf->b_data, 0, jrnp->jrn_blocksize);
+	/* Clear buffer completely */
+	memset(commit_bp->b_data, 0, jrnp->jrn_blocksize);
 
-	header = (struct ext2fs_journal_commit_header *) commit_buf->b_data;
+	/* Write commit header in big-endian */
+	header = (struct ext2fs_journal_commit_header *) commit_bp->b_data;
 	header->jch_header.jbh_magic = htobe32(EXT2_JOURNAL_MAGIC);
 	header->jch_header.jbh_blocktype = htobe32(EXT2_JOURNAL_COMMIT_BLOCK);
 	header->jch_header.jbh_sequence_num = htobe32(jrnp->jrn_sequence);
 
-	error = bwrite(commit_buf);
+	error = bwrite(commit_bp);
 	if (error) {
 		EXT2_JERROR("bwrite failed: %d\n", error);
 		EXT2_JTRACE_EXIT(error);
@@ -1368,9 +1371,11 @@ ext2_journal_checkpoint_metadata(struct ext2fs_journal *jrnp,
 	EXT2_JTRACE_ENTER();
 	TAILQ_FOREACH(jbuf, &trans->jt_metadata_buffers, jb_list) {
 		bp = jbuf->jb_buf;
-		error = BUF_LOCK(bp,  LK_EXCLUSIVE | LK_NOWAIT, NULL);
+		error = BUF_LOCK(bp, LK_EXCLUSIVE | LK_NOWAIT, NULL);
 		if (error) {
-			EXT2_JERROR("failed to lock the buf before brelse: %d\n", error);
+			EXT2_JERROR(
+			    "failed to lock the buf before brelse: %d\n",
+			    error);
 			return (error);
 		}
 		bp->b_flags &= ~B_MANAGED;
@@ -1506,24 +1511,13 @@ static int
 ext2_journal_commit_trans(struct ext2fs_journal *jrnp)
 {
 	struct ext2fs_journal_transaction *trans;
-	struct ext2_journal_buf *jbuf;
-	struct buf *sb_buf;
-	struct buf *disk_jbuf;
-	struct ext2fs_journal_sb *disk_sb;
-	struct vnode *jrn_vp = jrnp->jrn_vp;
 	struct ext2fs_journal_buf *jbuf;
 	uint32_t jrn_blknu;
 	int error = 0;
-	static bool first_commit = true;
 
 	EXT2_JTRACE_ENTER();
-	/* Ensure no active transaction while committing */
-	KASSERT(jrnp->jrn_active_trans != NULL,
-	    "ext2_journal_commit_trans: active trans\n");
-
 	EXT2_JLOCK(jrnp);
 	trans = jrnp->jrn_committing_trans;
-
 	if (trans == NULL) {
 		EXT2_JUNLOCK(jrnp);
 		EXT2_JERROR("trans to commit is NULL\n");
@@ -1533,12 +1527,9 @@ ext2_journal_commit_trans(struct ext2fs_journal *jrnp)
 
 	EXT2_JPRINT_TRANS(trans);
 	EXT2_JPRINT_TRANS_BUFFERS(trans);
-
-	/* Get starting journal block number */
-	jrn_blknu = jrnp->jrn_log_end;
-
 	/* Wait for all data I/O to finish. */
 	EXT2_JUNLOCK(jrnp);
+	// FIXME
 	TAILQ_FOREACH(jbuf, &trans->jt_data_buffers, jb_list) {
 		struct buf *bp = jbuf->jb_buf;
 		BUF_LOCK(bp, LK_EXCLUSIVE, NULL);
@@ -1553,6 +1544,7 @@ ext2_journal_commit_trans(struct ext2fs_journal *jrnp)
 	trans->jt_state = EXT2_TRANS_COMMIT;
 
 
+	jrn_blknu = jrnp->jrn_log_end;
 	EXT2_JUNLOCK(jrnp);
 	if (trans->jt_metadata_count > 0) {
 		/* Write descriptor block */
@@ -1590,36 +1582,6 @@ ext2_journal_commit_trans(struct ext2fs_journal *jrnp)
 			goto cleanup;
 		}
 
-		jrnp->jrn_log_end = jrn_blknu;
-
-		/* Update disk-superblock starting seq number*/
-		// Skip for now
-		if (first_commit) {
-			EXT2_JPRINTF("first commit so updating seq nu\n");
-			jrnp->jrn_sb->jsb_sequence_id = jrnp->jrn_sequence;
-			error = bread(jrn_vp, 0, jrnp->jrn_blocksize,
-			    NOCRED, &sb_buf);
-			if (error) {
-				EXT2_JERROR("bread failed: %d\n", error);
-
-				// or go to cleanup
-				return (error);
-			}
-			disk_sb = (struct ext2fs_journal_sb *) sb_buf->b_data;
-			/* TODO verify this */
-			disk_sb->jsb_sequence_id = htobe32(jrnp->jrn_sequence);
-
-			error = bwrite(sb_buf);
-			if (error) {
-				EXT2_JERROR("bwrite failed for superblock\n");
-				brelse(sb_buf);
-				return (error);
-			}
-			first_commit = false;
-		}
-
-		mtx_lock(&jrnp->jrn_lock);
-
 		EXT2_JLOCK(jrnp);
 		/* Update journal state */
 		jrnp->jrn_sequence++;
@@ -1628,9 +1590,6 @@ ext2_journal_commit_trans(struct ext2fs_journal *jrnp)
 
 		EXT2_JPRINTF("Commit completed successfully at block: %u\n",
 		    jrn_blknu);
-	} else {
-		/* No metadata to commit, just update state */
-		mtx_lock(&jrnp->jrn_lock);
 	}
 
 	EXT2_JLOCK(jrnp);
@@ -1639,15 +1598,15 @@ ext2_journal_commit_trans(struct ext2fs_journal *jrnp)
 	    jt_checkpoint_entry);
 	jrnp->jrn_committing_trans = NULL;
 
-	/* Wake up thread waiting on commmit */
+	/* Wake up threads waiting on commit */
 	cv_signal(&jrnp->jrn_trans_commit_cv);
 	EXT2_JUNLOCK(jrnp);
 
 	EXT2_JTRACE_EXIT(0);
 	return (0);
 cleanup:
-	EXT2_JERROR("fatal journal commit error: %d\n", error);
-	mtx_lock(&jrnp->jrn_lock);
+	EXT2_JERROR("Fatal journal commit error: %d\n", error);
+
 	jrnp->jrn_flags |= EXT2_JOURNAL_ABORTED;
 	jrnp->jrn_committing_trans = NULL;
 
@@ -1672,6 +1631,9 @@ ext2_journal_stop(struct ext2fs_journal *jrnp)
 	bool should_commit = false;
 
 	EXT2_JTRACE_ENTER();
+
+	if (!EXT2_JACTIVE(jrnp))
+		return (0);
 
 	EXT2_JLOCK(jrnp);
 	trans = jrnp->jrn_active_trans;
@@ -2157,6 +2119,8 @@ ext2_recover_orphan_list(struct ext2fs_journal *jrnp)
 	inum = fs->e2fs->e3fs_last_orphan;
 	if (inum != 0) {
 		EXT2_JPRINTF("Starting orphan inode recovery.\n");
+	} else {
+		return (0);
 	}
 
 	while (inum != 0) {
