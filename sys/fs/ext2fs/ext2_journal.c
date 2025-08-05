@@ -2038,12 +2038,12 @@ ext2_journal_add_orphan(struct vnode *vp)
 	error = ext2_update(vp, 1);
 	/* TODO better error handling. */
 	if (error)
-		EXT2_JERROR("inode update on orphan\n")
+		EXT2_JERROR("inode update on orphan\n");
 	fs->e2fs->e3fs_last_orphan = ip->i_number;
 	fs->e2fs_fmod = 1;
 	error = ext2_sbupdate(ump, 1);
 	if (error)
-		EXT2_JERROR("sb update on orphan\n")
+		EXT2_JERROR("sb update on orphan\n");
 	TAILQ_INSERT_HEAD(&ump->um_orphan_list, ip, i_orphan_list);
 
 	return (error);
