@@ -291,47 +291,61 @@ int ext2_journal_checkpoint_trans(struct ext2fs_journal *jrnp);
 
 int ext2_journal_revoke_block(struct ext2fs_journal *jrnp, uint32_t blocknu);
 
-
 int ext2_journal_in_orphan_list(struct vnode *vp);
 int ext2_journal_add_orphan(struct vnode *vp);
 int ext2_journal_del_orphan(struct vnode *vp);
 
 #define EXT2_JPRESENT(jrnp) ((jrnp) != NULL)
-
-#define EXT2_JOURNAL_START(jrnp, nblocks, error)                 \
-	do {                                                     \
-		(error) = ext2_journal_start((jrnp), (nblocks)); \
-		if ((error) != 0)                                \
-			EXT2_JERROR("journal start failed\n");   \
-	} while (0)
-
-#define EXT2_JOURNAL_STOP(jrnp, error)                                 \
-	do {                                                           \
-		if (jrnp && jrnp->jrn_active_trans) {                  \
-			(error) = ext2_journal_stop(jrnp);             \
-			if ((error) != 0)                              \
-				EXT2_JERROR("journal start failed\n"); \
-		}                                                      \
-	} while (0)
-
 #define EXT2_JACTIVE(jrnp) ((jrnp) && (jrnp)->jrn_active_trans)
 
-#define EXT2_JOURNAL_DIRTY_DATA(jrnp, bp, error)                             \
-	do {                                                                 \
-		(error) = ext2_journal_dirty_data((jrnp), (bp));             \
-		EXT2_JPRINTF("\n\njbuf data dirtied: %d\n\n",                \
-		    ((struct ext2fs_journal_buf *)bp->b_fsprivate1)->jb_id); \
-		if ((error) != 0)                                            \
-			EXT2_JERROR("journal dirty metadata failed\n");      \
-	} while (0)
+/*
+ * Macros for number of blocks needed to journal calls.
+ * Theres double counting right now but better to be safe?
+ */
+#define EXT2_JBCOUNT_BLOCK    1 /* Generic block */
+#define EXT2_JBCOUNT_SB	      1 /* Superblock */
+#define EXT2_JBCOUNT_CG	      1 /* Cylinder group description block */
+#define EXT2_JBCOUNT_BMP      1 /* Bitmap block (for inodes or data) */
+#define EXT2_JBCOUNT_INODE    1 /* Inode table block */
+#define EXT2_JBCOUNT_INDIRECT 1 /* Indirect block */
 
-#define EXT2_JOURNAL_DIRTY_METADATA(jrnp, bp, error)                         \
-	do {                                                                 \
-		(error) = ext2_journal_dirty_metadata((jrnp), (bp));         \
-		EXT2_JPRINTF("\n\njbuf metadata dirtied: %d\n\n",            \
-		    ((struct ext2fs_journal_buf *)bp->b_fsprivate1)->jb_id); \
-		if ((error) != 0)                                            \
-			EXT2_JERROR("journal dirty metadata failed\n");      \
-	} while (0)
+/* New block works for creating new inode. */
+#define EXT2_JBCOUNT_NEWINODE                                      \
+	(EXT2_JBCOUNT_INODE + EXT2_JBCOUNT_BMP + EXT2_JBCOUNT_CG + \
+	    EXT2_JBCOUNT_SB)
+
+/*
+ * Balloc allocates a new data or metadata block (direntry block).
+ * The worse case it needs to allocate data for the triple indirect
+ * pointer. This needs to allocate the first, second, and third indirect pointer
+ * blocks. These these can be in different cylinder group and bitmap blocks. We
+ * also need cg and bm block for the data/ metadata block itself and need to
+ * update the inode and superblock.
+ */
+#define EXT2_JBCOUNT_BALLOC	\
+	(EXT2_JBCOUNT_INODE + EXT2_JBCOUNT_SB + 4 * EXT2_JBCOUNT_CG + \
+	    4 * EXT2_JBCOUNT_BMP + 3 * EXT2_JBCOUNT_INDIRECT)
+#define EXT2_JBCOUNT_WRITE	(EXT2_JBCOUNT_BALLOC)
+/* Worse case direnter calls ext2_write to alloc a new block for direntry. */
+#define EXT2_JBCOUNT_DIRENTER	(EXT2_JBCOUNT_BALLOC)
+/* Create makes a new inode and adds a directory entry through ext2_write call.
+ */
+#define EXT2_JBCOUNT_CREATE	(EXT2_JBCOUNT_NEWINODE + EXT2_JBCOUNT_WRITE)
+#define EXT2_JBCOUNT_LINK	(EXT2_JBCOUNT_INODE + EXT2_JBCOUNT_DIRENTER)
+/* New inode for directory, block for ./.. entry and new entry in parent
+ * directory. */
+#define EXT2_JBCOUNT_MKDIR                                            \
+	(EXT2_JBCOUNT_NEWINODE + EXT2_JBCOUNT_CG + EXT2_JBCOUNT_BMP + \
+	    EXT2_JBCOUNT_DIRENTER)
+/* Update inode access time. */
+#define EXT2_JBCOUNT_READ	(EXT2_JBCOUNT_INODE)
+/* Update parent directory inode, removing inode and directory entry block.
+ * Update sb if inode orphaned. */
+#define EXT2_JBCOUNT_REMOVE	\
+	(2 * EXT2_JBCOUNT_INODE + EXT2_JBCOUNT_BLOCK + EXT2_JBCOUNT_SB)
+#define EXT2_JBCOUNT_TRUNCATE	(100) // TODO, filler
+#define EXT2_JBCOUNT_RMDIR	(EXT2_JBCOUNT_REMOVE + EXT2_JBCOUNT_TRUNCATE)
+#define EXT2_JBCOUNT_RENAME	(100) // TODO, filler
+#define EXT2_JBCOUNT_SYMLINK	(100) // TODO, filler
 
 #endif	/* !_FS_EXT2FS_EXT2_JOURNAL_H_ */
