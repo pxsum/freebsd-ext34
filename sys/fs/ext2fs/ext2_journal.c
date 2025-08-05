@@ -687,12 +687,9 @@ int
 ext2_journal_close(struct ext2fs_journal *jrnp)
 {
 	KASSERT(jrnp->jrn_active_trans == NULL,
-	    "journal close while active trans\n");
+	    ("journal close while active trans\n"));
 	KASSERT(jrnp->jrn_committing_trans == NULL,
-	    "journal close while comitting trans\n");
-	KASSERT(jrnp->jrn_checkpoint_list == NULL,
-	    "journal close while checkpoint trans\n");
-
+	    ("journal close while comitting trans\n"));
 	if (jrnp == NULL)
 		return (0);
 
@@ -835,8 +832,8 @@ ext2_journal_buf_alloc(struct ext2fs_journal *jrnp, struct buf *bp,
 static void
 ext2_journal_buf_free(struct ext2fs_journal_buf *jbuf)
 {
-	KASSERT(jbuf != NULL, "jbuf to free is NULL\n");
-	KASSERT(jbuf->jb_buf == NULL, "buf of jbuf is NOT NULL\n");
+	KASSERT(jbuf != NULL, ("jbuf to free is NULL\n"));
+	KASSERT(jbuf->jb_buf == NULL, ("buf of jbuf is NOT NULL\n"));
 	EXT2_JTRACE_ENTER();
 
 	free(jbuf, M_EXT2JBUF);
@@ -1004,9 +1001,6 @@ ext2_journal_dirty_metadata(struct ext2fs_journal *jrnp, struct buf *bp)
 		bqrelse(bp);
 		return(0);
 	}
-
-
-	KASSERT(bp->b_iodone != NULL, "assumption of b_iodone not used is wrong\n");
 
 	/*
 	 * Since only some parts of the filesystem is journaled, the passed in
@@ -1333,8 +1327,6 @@ ext2_journal_write_metadata_blcks(struct ext2fs_journal *jrnp,
 
 	/* Write metadata blocks to journal */
 	TAILQ_FOREACH(jbuf, &trans->jt_metadata_buffers, jb_list) {
-		KASSERT(jbuf->jb_buf != NULL, "NULL jbuf->jb_buf");
-		/* Get fresh journal buffer */
 		disk_jbuf = getblk(jrnp->jrn_vp, *blknu, jrnp->jrn_blocksize,
 		    0, 0, 0);
 		if (disk_jbuf == NULL) {
@@ -1496,7 +1488,7 @@ ext2_journal_checkpoint_trans(struct ext2fs_journal *jrnp)
 
 unlock_and_exit:
 	KASSERT(jrnp->jrn_block_new_trans == true,
-	    "new transactions were allowed to start while checkpointing\n");
+	    ("new transactions were allowed to start while checkpointing\n"));
 
 	ext2_journal_revoke_table_clear(jrnp->jrn_revoke_table);
 

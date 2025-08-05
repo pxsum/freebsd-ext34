@@ -1174,6 +1174,8 @@ ext2_statfs(struct mount *mp, struct statfs *sbp)
  * go through the inodes to write those that have been modified;
  * initiate the writing of the super block if it has been modified.
  *
+ * TODO checkpoint journal if journaling enabled
+ *
  * Note: we are always called with the filesystem marked `MPBUSY'.
  */
 static int
@@ -1233,14 +1235,16 @@ loop:
 	}
 
 	/*
+	 * FIXME For journaling skip this for now
+	 *
 	 * Write back modified superblock.
-	 */
 	if (fs->e2fs_fmod != 0) {
 		fs->e2fs_fmod = 0;
 		fs->e2fs->e2fs_wtime = htole32(time_second);
 		if ((error = ext2_cgupdate(ump, waitfor)) != 0)
 			allerror = error;
 	}
+	*/
 	return (allerror);
 }
 

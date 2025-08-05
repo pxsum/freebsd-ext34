@@ -333,7 +333,7 @@ ext2_ind_truncate(struct vnode *vp, off_t length, int flags, struct ucred *cred,
 		return (error);
 	}
 	KASSERT(ext2_journal_in_orphan_list(vp),
-	    "ext2_ind_truncate: inode not in orphan list");
+	    ("ext2_ind_truncate: inode not in orphan list"));
 	/*
 	 * Shorten the size of the file. If the file is not being
 	 * truncated to a block boundary, the contents of the
@@ -717,7 +717,7 @@ ext2_inactive(struct vop_inactive_args *ap)
 		goto out;
 	if (ip->i_nlink <= 0) {
 		KASSERT(ext2_journal_in_orphan_list(vp),
-		    "ext2_inactive: inode not in orphan list");
+		    ("ext2_inactive: inode not in orphan list"));
 		ext2_extattr_free(ip);
 		error = ext2_truncate(vp, (off_t)0, 0, NOCRED, td);
 		ip->i_rdev = 0;
