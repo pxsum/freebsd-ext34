@@ -320,8 +320,8 @@ static const struct ext2_feature incompat[] = {
  * - EXT2F_INCOMPAT_EXTENTS
  *
  */
-#define	EXT2F_COMPAT_SUPP		(EXT2F_COMPAT_DIRHASHINDEX | \
-					 EXT2F_COMPAT_HASJOURNAL)
+#define	EXT2F_COMPAT_SUPP		(EXT2F_COMPAT_HASJOURNAL)
+/*(EXT2F_COMPAT_DIRHASHINDEX | \*/
 #define	EXT2F_ROCOMPAT_SUPP		(EXT2F_ROCOMPAT_SPARSESUPER | \
 					 EXT2F_ROCOMPAT_LARGEFILE | \
 					 EXT2F_ROCOMPAT_GDT_CSUM | \
@@ -331,10 +331,10 @@ static const struct ext2_feature incompat[] = {
 					 EXT2F_ROCOMPAT_EXTRA_ISIZE)
 #define	EXT2F_INCOMPAT_SUPP		(EXT2F_INCOMPAT_FTYPE | \
 					 EXT2F_INCOMPAT_META_BG | \
-					 EXT2F_INCOMPAT_EXTENTS | \
-					 EXT2F_INCOMPAT_64BIT | \
 					 EXT2F_INCOMPAT_FLEX_BG | \
 					 EXT2F_INCOMPAT_CSUM_SEED)
+					 /* EXT2F_INCOMPAT_EXTENTS |	\
+					  EXT2F_INCOMPAT_64BIT | \*/
 
 /* Assume that user mode programs are passing in an ext2fs superblock, not
  * a kernel struct super_block.  This will allow us to call the feature-test

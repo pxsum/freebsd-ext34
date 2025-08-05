@@ -206,7 +206,9 @@ ext2_balloc(struct inode *ip, e2fs_lbn_t lbn, int size, struct ucred *cred,
 		 * never point at garbage.
 		 */
 		if (EXT2_JACTIVE(jrnp)) {
-			EXT2_JOURNAL_DIRTY_METADATA(jrnp, bp, error);
+			error = ext2_journal_dirty_metadata(jrnp, bp);
+			if (error) {
+			}
 		} else {
 			error = bwrite(bp);
 		}
@@ -255,7 +257,9 @@ ext2_balloc(struct inode *ip, e2fs_lbn_t lbn, int size, struct ucred *cred,
 		 * never point at garbage.
 		 */
 		if (EXT2_JACTIVE(jrnp)) {
-			EXT2_JOURNAL_DIRTY_METADATA(jrnp, nbp, error);
+			error = ext2_journal_dirty_metadata(jrnp, nbp);
+			if (error) {
+			}
 		} else {
 			error = bwrite(nbp);
 		}
@@ -270,7 +274,9 @@ ext2_balloc(struct inode *ip, e2fs_lbn_t lbn, int size, struct ucred *cred,
 		 * delayed write.
 		 */
 		if (EXT2_JACTIVE(jrnp)) {
-			EXT2_JOURNAL_DIRTY_METADATA(jrnp, bp, error);
+			error = ext2_journal_dirty_metadata(jrnp, nbp);
+			if (error) {
+			}
 		} else if (flags & IO_SYNC) {
 			bwrite(bp);
 		} else {
@@ -304,7 +310,9 @@ ext2_balloc(struct inode *ip, e2fs_lbn_t lbn, int size, struct ucred *cred,
 		 * delayed write.
 		 */
 		if (EXT2_JACTIVE(jrnp)) {
-			EXT2_JOURNAL_DIRTY_METADATA(jrnp, bp, error);
+			error = ext2_journal_dirty_metadata(jrnp, bp);
+			if (error) {
+			}
 		} else if (flags & IO_SYNC) {
 			bwrite(bp);
 		} else {

@@ -995,17 +995,10 @@ ext2_mountfs(struct vnode *devvp, struct mount *mp)
 		if (error != 0) {
 			printf("ext2fs: failed to open journal. error: %d\n", error);
 		} else {
-			printf("ext2fs: journal opened successfully\n");
-			printf("ext2fs: journal blocksize: %u\n", jrnp->jrn_blocksize);
-			printf("ext2fs: journal max blocks: %u\n", jrnp->jrn_max_blocks);
-			printf("ext2fs: journal first block: %u\n", jrnp->jrn_first);
-			printf("ext2fs: journal last block: %u\n", jrnp->jrn_last);
-
 			if (jrnp->jrn_flags & EXT2_JOURNAL_CLEAN) {
 				printf("ext2fs: journal is clean\n");
 			} else if (jrnp->jrn_flags & EXT2_JOURNAL_NEEDS_RECOVERY) {
 				printf("ext2fs: journal needs recovery\n");
-				// TODO handle recovery
 				error = ext2_journal_recover(jrnp);
 				if (error) {
 					printf("ext2fs: journal recovery error\n");
@@ -1075,11 +1068,11 @@ ext2_unmount(struct mount *mp, int mntflags)
 		ext2_journal_block_new_tran(jrnp);
 		error = ext2_journal_force_commit(jrnp);
 		if (error) {
-			EXT2_JERROR("ext2_force_commit error: %d/n", error);
+			EXT2_JERROR("ext2_force_commit error: %d\n", error);
 		}
 		error = ext2_journal_checkpoint_trans(jrnp);
 		if (error) {
-			EXT2_JERROR("ext2_journal_checkpoint error: %d/n", error);
+			EXT2_JERROR("ext2_journal_checkpoint error: %d\n", error);
 		}
 
 		ext2_journal_close(jrnp);
@@ -1449,7 +1442,9 @@ ext2_sbupdate(struct ext2mount *mp, int waitfor)
 	memcpy((char *)bp->b_data + SBLOCKOFFSET, (caddr_t)es,
 	    (u_int)sizeof(struct ext2fs));
 	if (EXT2_JACTIVE(jrnp)) {
-		EXT2_JOURNAL_DIRTY_METADATA(jrnp, bp, error);
+		error = ext2_journal_dirty_metadata(jrnp, bp);
+		if (error) {
+		}
 	} else if (waitfor == MNT_WAIT) {
 		error = bwrite(bp);
 	} else {

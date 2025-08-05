@@ -100,8 +100,10 @@ ext2_update(struct vnode *vp, int waitfor)
 		brelse(bp);
 		return (error);
 	}
-	if (EXT2_JOURNALING_IS_ACTIVE(jrnp)) {
-		EXT2_JOURNAL_DIRTY_METADATA(jrnp, bp, error);
+	if (EXT2_JACTIVE(jrnp)) {
+		error = ext2_journal_dirty_metadata(jrnp, bp);
+		if (error) {
+		}
 		return (error);
 	}
 	if (waitfor && !DOINGASYNC(vp)) {
@@ -186,7 +188,7 @@ ext2_indirtrunc(struct inode *ip, daddr_t lbn, daddr_t dbn,
 	 * If journaling, do not journal or write zeroed block pointer yet.
 	 * If we do, there is no way to recover and redo the truncate procoess.
 	 */
-	if (EXT2_JOURNAL_IS_PRESENT(jrnp)) {
+	if (EXT2_JPRESENT(jrnp)) {
 	} else if (DOINGASYNC(vp)) {
 		bdwrite(bp);
 	} else {
@@ -210,10 +212,12 @@ ext2_indirtrunc(struct inode *ip, daddr_t lbn, daddr_t dbn,
 				allerror = error;
 			blocksreleased += blkcount;
 		}
-		if (EXT2_JOURNAL_IS_PRESENT(jrnp))
-			EXT2_JOURNAL_START(jrnp, 2, error);
+		if (EXT2_JPRESENT(jrnp))
+			error = ext2_journal_start(jrnp, 2);
 		ext2_blkfree(ip, nb, fs->e2fs_bsize);
-		EXT2_JOURNAL_STOP(jrnp, error);
+		error = ext2_journal_stop(jrnp);
+		if (error) {
+		}
 		blocksreleased += nblocks;
 	}
 
@@ -233,11 +237,17 @@ ext2_indirtrunc(struct inode *ip, daddr_t lbn, daddr_t dbn,
 	/*
 	 * Now we can journal the zeroed block pointer.
 	 */
-	if (EXT2_JOURNAL_IS_PRESENT(jrnp)) {
-		EXT2_JOURNAL_START(jrnp, 1, error);
-		EXT2_JOURNAL_DIRTY_METADATA(jrnp, bp, error);
+	if (EXT2_JPRESENT(jrnp)) {
+		error = ext2_journal_start(jrnp, 1);
+		if (error) {
+		}
+		error = ext2_journal_dirty_metadata(jrnp, bp);
+		if (error) {
+		}
 	}
-	EXT2_JOURNAL_STOP(jrnp, error);
+	error = ext2_journal_stop(jrnp);
+	if (error) {
+	}
 	free(copy, M_TEMP);
 	*countp = blocksreleased;
 	return (allerror);
@@ -287,23 +297,29 @@ ext2_ind_truncate(struct vnode *vp, off_t length, int flags, struct ucred *cred,
 		if (length > oip->i_e2fs->e2fs_maxfilesize)
 			return (EFBIG);
 		vnode_pager_setsize(ovp, length);
-		if (EXT2_JOURNAL_IS_PRESENT(jrnp)) {
-			EXT2_JOURNAL_START(jrnp, 100, error);
+		if (EXT2_JPRESENT(jrnp)) {
+			error = ext2_journal_start(jrnp, 100);
+			if (error) {
+			}
 		}
 		offset = blkoff(fs, length - 1);
 		lbn = lblkno(fs, length - 1);
 		flags |= BA_CLRBUF;
 		error = ext2_balloc(oip, lbn, offset + 1, cred, &bp, flags);
 		if (error) {
-			EXT2_JOURNAL_STOP(jrnp, error);
+			error = ext2_journal_stop(jrnp);
+			if (error) {
+			}
 			vnode_pager_setsize(vp, osize);
 			return (error);
 		}
 		oip->i_size = length;
 		if (bp->b_bufsize == fs->e2fs_bsize)
 			bp->b_flags |= B_CLUSTEROK;
-		if (EXT2_JOURNALING_IS_ACTIVE(jrnp)) {
-			EXT2_JOURNAL_DIRTY_METADATA(jrnp, bp, error);
+		if (EXT2_JACTIVE(jrnp)) {
+			error = ext2_journal_dirty_metadata(jrnp, bp);
+			if (error) {
+			}
 		} else if (flags & IO_SYNC) {
 			bwrite(bp);
 		} else if (DOINGASYNC(ovp)) {
@@ -313,7 +329,7 @@ ext2_ind_truncate(struct vnode *vp, off_t length, int flags, struct ucred *cred,
 		}
 		oip->i_flag |= IN_CHANGE | IN_UPDATE;
 		error = ext2_update(ovp, !DOINGASYNC(ovp));
-		EXT2_JOURNAL_STOP(jrnp, error);
+		error = ext2_journal_stop(jrnp);
 		return (error);
 	}
 	KASSERT(ext2_journal_in_orphan_list(vp),
@@ -382,7 +398,7 @@ ext2_ind_truncate(struct vnode *vp, off_t length, int flags, struct ucred *cred,
 	 * blocks are freed. If we zero out block pointers prematurely, we
 	 * cannot redo the truncate process on mount.
 	 */
-	if (!EXT2_JOURNAL_IS_PRESENT(jrnp)) {
+	if (!EXT2_JPRESENT(jrnp)) {
 		oip->i_flag |= IN_CHANGE | IN_UPDATE;
 		allerror = ext2_update(ovp, !DOINGASYNC(ovp));
 	}
@@ -407,7 +423,7 @@ ext2_ind_truncate(struct vnode *vp, off_t length, int flags, struct ucred *cred,
 	}
 	oip->i_size = osize;
 	/* I think we have to skip this when journaling. */
-	if (!EXT2_JOURNAL_IS_PRESENT(jrnp)) {
+	if (!EXT2_JPRESENT(jrnp)) {
 		error = vtruncbuf(ovp, length, (int)fs->e2fs_bsize);
 		if (error && (allerror == 0))
 			allerror = error;
@@ -430,10 +446,15 @@ ext2_ind_truncate(struct vnode *vp, off_t length, int flags, struct ucred *cred,
 			blocksreleased += count;
 			if (lastiblock[level] < 0) {
 				oip->i_ib[level] = 0;
-				if (EXT2_JOURNAL_IS_PRESENT(jrnp))
-					EXT2_JOURNAL_START(jrnp, 100, error);
+				if (EXT2_JPRESENT(jrnp)) {
+					error = ext2_journal_start(jrnp, 100);
+					if (error) {
+					}
+				}
 				ext2_blkfree(oip, bn, fs->e2fs_fsize);
-				EXT2_JOURNAL_STOP(jrnp, error);
+				error = ext2_journal_stop(jrnp);
+				if (error) {
+				}
 				blocksreleased += nblocks;
 			}
 		}
@@ -446,8 +467,11 @@ ext2_ind_truncate(struct vnode *vp, off_t length, int flags, struct ucred *cred,
 	 *
 	 * Journal the direct block freeing as one.
 	 */
-	if (EXT2_JOURNAL_IS_PRESENT(jrnp))
-		EXT2_JOURNAL_START(jrnp, 12, error);
+	if (EXT2_JPRESENT(jrnp)) {
+		error = ext2_journal_start(jrnp, 12);
+		if (error) {
+		}
+	}
 	for (i = EXT2_NDADDR - 1; i > lastblock; i--) {
 		long bsize;
 
@@ -460,7 +484,9 @@ ext2_ind_truncate(struct vnode *vp, off_t length, int flags, struct ucred *cred,
 		blocksreleased += btodb(bsize);
 	}
 	if (lastblock < 0) {
-		EXT2_JOURNAL_STOP(jrnp, error);
+		error = ext2_journal_stop(jrnp);
+		if (error) {
+		}
 		goto done;
 	}
 
@@ -632,23 +658,33 @@ ext2_truncate(struct vnode *vp, off_t length, int flags, struct ucred *cred,
 		if (length != 0)
 			panic("ext2_truncate: partial truncate of symlink");
 #endif
-		if (EXT2_JOURNAL_IS_PRESENT(jrnp)) {
-			EXT2_JOURNAL_START(jrnp, 100, error);
+		if (EXT2_JPRESENT(jrnp)) {
+			error = ext2_journal_start(jrnp, 100);
+			if (error) {
+			}
 		}
 		bzero((char *)&ip->i_shortlink, (u_int)ip->i_size);
 		ip->i_size = 0;
 		ip->i_flag |= IN_CHANGE | IN_UPDATE;
 		error = ext2_update(vp, 1);
-		EXT2_JOURNAL_STOP(jrnp, error);
+		if (error) {
+		}
+		error = ext2_journal_stop(jrnp);
+		if (error) {
+		}
 		return (error);
 	}
 	if (ip->i_size == length) {
-		if (EXT2_JOURNAL_IS_PRESENT(jrnp)) {
-			EXT2_JOURNAL_START(jrnp, 100, error);
+		if (EXT2_JPRESENT(jrnp)) {
+			error = ext2_journal_start(jrnp, 100);
+			if (error) {
+			}
 		}
 		ip->i_flag |= IN_CHANGE | IN_UPDATE;
 		error = ext2_update(vp, 1);
-		EXT2_JOURNAL_STOP(jrnp, error);
+		error = ext2_journal_stop(jrnp);
+		if (error) {
+		}
 		return (error);
 	}
 
@@ -701,7 +737,7 @@ out:
 	 * yet since the changes are cached right now.
 	 * We can vrecycle at checkpoint time?
 	 */
-	if (ip->i_mode == 0 && !EXT2_JOURNAL_IS_PRESENT(jrnp))
+	if (ip->i_mode == 0 && !EXT2_JPRESENT(jrnp))
 		vrecycle(vp);
 	return (error);
 }

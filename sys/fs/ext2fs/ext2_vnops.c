@@ -270,9 +270,10 @@ ext2_create(struct vop_create_args *ap)
 	ump = VFSTOEXT2(ap->a_dvp->v_mount);
 	jrnp = ump->um_journal;
 	if (EXT2_JPRESENT(jrnp)) {
-		EXT2_JOURNAL_START(jrnp, 100, error);
+		error = ext2_journal_start(jrnp, EXT2_JBCOUNT_CREATE);
+		if (error) {
+		}
 	}
-
 	error =
 	    ext2_makeinode(MAKEIMODE(ap->a_vap->va_type, ap->a_vap->va_mode),
 	    ap->a_dvp, ap->a_vpp, ap->a_cnp);
@@ -281,7 +282,7 @@ ext2_create(struct vop_create_args *ap)
 	if ((ap->a_cnp->cn_flags & MAKEENTRY) != 0)
 		cache_enter(ap->a_dvp, *ap->a_vpp, ap->a_cnp);
 
-	EXT2_JOURNAL_STOP(jrnp, error);
+	error = ext2_journal_stop(jrnp);
 	return (error);
 }
 
@@ -703,7 +704,9 @@ ext2_remove(struct vop_remove_args *ap)
 		goto out;
 	}
 	if (EXT2_JPRESENT(jrnp)) {
-		EXT2_JOURNAL_START(jrnp, 100, error);
+		error = ext2_journal_start(jrnp, EXT2_JBCOUNT_REMOVE);
+		if (error) {
+		}
 	}
 	error = ext2_dirremove(dvp, ap->a_cnp);
 	if (error == 0) {
@@ -720,7 +723,7 @@ ext2_remove(struct vop_remove_args *ap)
 		ext2_update(vp, 1);
 	}
 out:
-	EXT2_JOURNAL_STOP(jrnp, error);
+	error = ext2_journal_stop(jrnp);
 	return (error);
 }
 
@@ -750,9 +753,9 @@ ext2_link(struct vop_link_args *ap)
 
 	/* If journaling is on, wrap this file operation in a transaction */
 	if (EXT2_JPRESENT(jrnp)) {
-		EXT2_JOURNAL_START(jrnp, 100, error);
-		if (error)
-			goto out;
+		error = ext2_journal_start(jrnp, EXT2_JBCOUNT_LINK);
+		if (error) {
+		}
 	}
 
 	ip->i_nlink++;
@@ -763,9 +766,14 @@ ext2_link(struct vop_link_args *ap)
 	if (error) {
 		ip->i_nlink--;
 		ip->i_flag |= IN_CHANGE;
+		if (EXT2_JACTIVE(jrnp)) {
+			error = ext2_update(vp, 1);
+		}
 	}
 out:
-	EXT2_JOURNAL_STOP(jrnp, error);
+	error = ext2_journal_stop(jrnp);
+	if (error) {
+	}
 	return (error);
 }
 
@@ -909,7 +917,9 @@ abortit:
 
 	/* Start journaling after basic checks. */
 	if (EXT2_JPRESENT(jrnp)) {
-		EXT2_JOURNAL_START(jrnp, 100, error);
+		error = ext2_journal_start(jrnp, EXT2_JBCOUNT_RENAME);
+		if (error)
+			;
 	}
 	/*
 	 * When the target exists, both the directory
@@ -1186,7 +1196,7 @@ abortit:
 	if (xp)
 		vput(fvp);
 	vrele(ap->a_fvp);
-	EXT2_JOURNAL_STOP(jrnp, error);
+	error = ext2_journal_stop(jrnp);
 	return (error);
 
 bad:
@@ -1205,7 +1215,7 @@ out:
 		vput(fvp);
 	} else
 		vrele(fvp);
-	EXT2_JOURNAL_STOP(jrnp, error);
+	error = ext2_journal_stop(jrnp);
 	return (error);
 }
 
@@ -1372,7 +1382,7 @@ ext2_mkdir(struct vop_mkdir_args *ap)
 	struct ext2mount *ump = VFSTOEXT2(dvp->v_mount);
 	struct ext2fs_journal *jrnp = ump->um_journal;
 	char *buf = NULL;
-	int error, error2, dmode;
+	int error, dmode;
 
 	dp = VTOI(dvp);
 	if ((nlink_t)dp->i_nlink >= EXT4_LINK_MAX &&
@@ -1382,7 +1392,9 @@ ext2_mkdir(struct vop_mkdir_args *ap)
 	}
 
 	if (EXT2_JPRESENT(jrnp)) {
-		EXT2_JOURNAL_START(jrnp, 100, error);
+		error = ext2_journal_start(jrnp, EXT2_JBCOUNT_MKDIR);
+		if (error) {
+		}
 	}
 
 	dmode = vap->va_mode & 0777;
@@ -1505,18 +1517,22 @@ bad:
 	if (error) {
 		ip->i_nlink = 0;
 		ip->i_flag |= IN_CHANGE;
-		if (EXT2_JACTIVE(jrnp))
-			ext2_update(tvp, 1);
 		vput(tvp);
 	} else
 		*ap->a_vpp = tvp;
 out:
 	if (EXT2_JACTIVE(jrnp)) {
-		ext2_update(tvp, 1);
-		ext2_update(dvp, 1);
+		error = ext2_update(tvp, 1);
+		if (error) {
+		}
+		error = ext2_update(dvp, 1);
+		if (error) {
+		}
 	}
 	free(buf, M_TEMP);
-	EXT2_JOURNAL_STOP(jrnp, error2);
+	error = ext2_journal_stop(jrnp);
+	if (error) {
+	}
 	return (error);
 #undef  DIRBLKSIZ
 #define DIRBLKSIZ  DEV_BSIZE
@@ -1558,7 +1574,9 @@ ext2_rmdir(struct vop_rmdir_args *ap)
 		goto out;
 	}
 	if (EXT2_JPRESENT(jrnp)) {
-		EXT2_JOURNAL_START(jrnp, 100, error);
+		error = ext2_journal_start(jrnp, EXT2_JBCOUNT_RMDIR);
+		if (error) {
+		}
 	}
 	/*
 	 * Delete reference to directory before purging
@@ -1570,6 +1588,11 @@ ext2_rmdir(struct vop_rmdir_args *ap)
 		goto out;
 	ext2_dec_nlink(dp);
 	dp->i_flag |= IN_CHANGE;
+	if (EXT2_JACTIVE(jrnp)) {
+		error = ext2_update(dvp, 1);
+		if (error) {
+		}
+	}
 	cache_purge(dvp);
 	VOP_UNLOCK(dvp);
 	/*
@@ -1586,7 +1609,7 @@ ext2_rmdir(struct vop_rmdir_args *ap)
 		vn_lock(vp, LK_EXCLUSIVE | LK_RETRY);
 	}
 out:
-	EXT2_JOURNAL_STOP(jrnp, error);
+	error = ext2_journal_stop(jrnp);
 	return (error);
 }
 
@@ -1600,18 +1623,22 @@ ext2_symlink(struct vop_symlink_args *ap)
 	struct inode *ip;
 	struct ext2mount *ump;
 	struct ext2fs_journal *jrnp;
-	int len, error, error2;
+	int len, error = 0, error2 = 0;
 
 	ump = VFSTOEXT2(ap->a_dvp->v_mount);
 	jrnp = ump->um_journal;
 	if (EXT2_JPRESENT(jrnp)) {
-		EXT2_JOURNAL_START(jrnp, 100, error);
+		error = ext2_journal_start(jrnp, EXT2_JBCOUNT_SYMLINK);
+		if (error)
+			;
 	}
 
 	error = ext2_makeinode(IFLNK | ap->a_vap->va_mode, ap->a_dvp,
 	    vpp, ap->a_cnp);
 	if (error) {
-		EXT2_JOURNAL_STOP(jrnp, error2);
+		error2 = ext2_journal_stop(jrnp);
+		if (error2) {
+		}
 		return (error);
 	}
 	vp = *vpp;
@@ -1631,7 +1658,7 @@ ext2_symlink(struct vop_symlink_args *ap)
 		    ap->a_cnp->cn_cred, NOCRED, NULL, NULL);
 	if (error)
 		vput(vp);
-	EXT2_JOURNAL_STOP(jrnp, error);
+	error = ext2_journal_stop(jrnp);
 	return (error);
 }
 
@@ -2232,9 +2259,15 @@ ext2_read(struct vop_read_args *ap)
 		ip->i_flag |= IN_ACCESS;
 		/* If journaling, journal inode access time. */
 		if (EXT2_JPRESENT(jrnp)) {
-			EXT2_JOURNAL_START(jrnp, 100, error);
-			ext2_update(vp, 1);
-			EXT2_JOURNAL_STOP(jrnp, error);
+			error = ext2_journal_start(jrnp, EXT2_JBCOUNT_READ);
+			if (error) {
+			}
+			error = ext2_update(vp, 1);
+			if (error) {
+			}
+			error = ext2_journal_stop(jrnp);
+			if (error) {
+			}
 		}
 	}
 	return (error);
@@ -2343,8 +2376,11 @@ ext2_write(struct vop_write_args *ap)
 
 	for (error = 0; uio->uio_resid > 0;) {
 forloop:
-		if (EXT2_JPRESENT(jrnp))
-			EXT2_JOURNAL_START(jrnp, 20, error);
+		if (EXT2_JPRESENT(jrnp)) {
+			error = ext2_journal_start(jrnp, EXT2_JBCOUNT_WRITE);
+			if (error) {
+			}
+		}
 		lbn = lblkno(fs, uio->uio_offset);
 		blkoffset = blkoff(fs, uio->uio_offset);
 		xfersize = fs->e2fs_fsize - blkoffset;
@@ -2403,7 +2439,7 @@ forloop:
 		if ((EXT2_JACTIVE(jrnp)) &&
 			(vp->v_type == VDIR || vp->v_type == VLNK)) {
 			EXT2_JPRINTF("write to directory data\n");
-			EXT2_JOURNAL_DIRTY_METADATA(jrnp, bp, error);
+			error = ext2_journal_dirty_metadata(jrnp, bp);
 			if (error) {
 				brelse(bp);
 				break;
@@ -2417,14 +2453,20 @@ forloop:
 		 * or a delayed write (if not).
 		 */
 		} else if (ioflag & IO_SYNC) {
-			if (EXT2_JACTIVE(jrnp))
-				EXT2_JOURNAL_DIRTY_DATA(jrnp, bp, error);
+			if (EXT2_JACTIVE(jrnp)) {
+				error = ext2_journal_dirty_data(jrnp, bp);
+				if (error) {
+				}
+			}
 			(void)bwrite(bp);
 		} else if (vm_page_count_severe() ||
 			    buf_dirty_count_severe() ||
 		    (ioflag & IO_ASYNC)) {
-			if (EXT2_JACTIVE(jrnp))
-				EXT2_JOURNAL_DIRTY_DATA(jrnp, bp, error);
+			if (EXT2_JACTIVE(jrnp)) {
+				error = ext2_journal_dirty_data(jrnp, bp);
+				if (error) {
+				}
+			}
 			bp->b_flags |= B_CLUSTEROK;
 			bawrite(bp);
 		/* TODO journal */
@@ -2437,13 +2479,19 @@ forloop:
 				bawrite(bp);
 			}
 		} else if (ioflag & IO_DIRECT) {
-			if (EXT2_JACTIVE(jrnp))
-				EXT2_JOURNAL_DIRTY_DATA(jrnp, bp, error);
+			if (EXT2_JACTIVE(jrnp)) {
+				error = ext2_journal_dirty_data(jrnp, bp);
+				if (error) {
+				}
+			}
 			bp->b_flags |= B_CLUSTEROK;
 			bawrite(bp);
 		} else {
-			if (EXT2_JACTIVE(jrnp))
-				EXT2_JOURNAL_DIRTY_DATA(jrnp, bp, error);
+			if (EXT2_JACTIVE(jrnp)) {
+				error = ext2_journal_dirty_data(jrnp, bp);
+				if (error) {
+				}
+			}
 			bp->b_flags |= B_CLUSTEROK;
 			bdwrite(bp);
 		}
@@ -2474,8 +2522,11 @@ jrnpath:
 		if (ioflag & IO_SYNC)
 			error = ext2_update(vp, 1);
 	}
-	if (EXT2_JACTIVE(jrnp))
-		EXT2_JOURNAL_STOP(jrnp, error);
+	if (EXT2_JACTIVE(jrnp)) {
+		error = ext2_journal_stop(jrnp);
+		if (error) {
+		}
+	}
 	if (uio->uio_resid > 0)
 		goto forloop;
 
