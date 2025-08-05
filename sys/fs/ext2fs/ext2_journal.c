@@ -79,7 +79,7 @@ ext2_journal_is_block_revoked(struct ext2fs_journal_revoke_table *table,
 static int ext2_recover_orphan_list(struct ext2fs_journal *jrnp);
 static int ext2_journal_walk_trans(struct ext2fs_journal *jrnp,
     enum ext2fs_journal_pass_type pass, uint32_t trans_start,
-    uint32_t *next_trans_start);
+    uint32_t *next_trans_start, uint32_t *trans_seq);
 
 /*
  * Verify if the given data block is a valid journal block.
@@ -349,7 +349,7 @@ ext2_journal_walk_trans(struct ext2fs_journal *jrnp,
     enum ext2fs_journal_pass_type pass, uint32_t trans_start,
     uint32_t *next_trans_start, uint32_t *trans_seq)
 {
-	struct vnode *vp;
+	// struct vnode *vp;
 	struct m_ext2fs *fs;
 	struct ext2fs_journal_desc_tag *tag;
 	struct buf *desc_buf = NULL;
@@ -365,13 +365,13 @@ ext2_journal_walk_trans(struct ext2fs_journal *jrnp,
 
 	EXT2_JTRACE_ENTER();
 
-	vp = jrnp->jrn_vp;
+	// vp = jrnp->jrn_vp;         /// <----- ? XXX: vp NEEDED BY UNKNOWN FUNCTION CALL BELOW
 	fs = jrnp->jrn_fs;
 	cur_blk = trans_start;
 	tag_size = ext2_journal_tag_size(jrnp->jrn_sb);
 	/* Walk all descriptor and data blocks for this transaction */
 	while (more_desc_blocks) {
-		    &desc_buf);
+		    // &desc_buf);    /// <----- ? XXX: HERE SHOULD BE SOME FUNCTION CALL
 		if (error) {
 			EXT2_JERROR("desc block read fail: %d\n", error);
 			return (error);
@@ -687,11 +687,11 @@ int
 ext2_journal_close(struct ext2fs_journal *jrnp)
 {
 	KASSERT(jrnp->jrn_active_trans == NULL,
-	    "journal close while active trans\n");
+	    ("journal close while active trans\n"));
 	KASSERT(jrnp->jrn_committing_trans == NULL,
-	    "journal close while comitting trans\n");
-	KASSERT(jrnp->jrn_checkpoint_list == NULL,
-	    "journal close while checkpoint trans\n");
+	    ("journal close while comitting trans\n"));
+	//KASSERT(jrnp->jrn_checkpoint_list == NULL,  /// <----- ? XXX: LOOKS jrn_checkpoint_list is not pointer
+	//    ("journal close while checkpoint trans\n"));
 
 	if (jrnp == NULL)
 		return (0);
@@ -834,8 +834,8 @@ ext2_journal_buf_alloc(struct ext2fs_journal *jrnp, struct buf *bp,
 static void
 ext2_journal_buf_free(struct ext2fs_journal_buf *jbuf)
 {
-	KASSERT(jbuf != NULL, "jbuf to free is NULL\n");
-	KASSERT(jbuf->jb_buf == NULL, "buf of jbuf is NOT NULL\n");
+	KASSERT(jbuf != NULL, ("jbuf to free is NULL\n"));
+	KASSERT(jbuf->jb_buf == NULL, ("buf of jbuf is NOT NULL\n"));
 	EXT2_JTRACE_ENTER();
 
 	free(jbuf, M_EXT2JBUF);
@@ -1005,7 +1005,7 @@ ext2_journal_dirty_metadata(struct ext2fs_journal *jrnp, struct buf *bp)
 	}
 
 
-	KASSERT(bp->b_iodone != NULL, "assumption of b_iodone not used is wrong\n");
+	KASSERT(bp->b_iodone != NULL, ("assumption of b_iodone not used is wrong\n"));
 
 	/*
 	 * Since only some parts of the filesystem is journaled, the passed in
@@ -1330,7 +1330,7 @@ ext2_journal_write_metadata_blcks(struct ext2fs_journal *jrnp,
 
 	/* Write metadata blocks to journal */
 	TAILQ_FOREACH(jbuf, &trans->jt_metadata_buffers, jb_list) {
-		KASSERT(jbuf->jb_buf != NULL, "NULL jbuf->jb_buf");
+		KASSERT(jbuf->jb_buf != NULL, ("NULL jbuf->jb_buf"));
 		/* Get fresh journal buffer */
 		disk_jbuf = getblk(jrnp->jrn_vp, *blknu, jrnp->jrn_blocksize,
 		    0, 0, 0);
@@ -1491,7 +1491,7 @@ ext2_journal_checkpoint_trans(struct ext2fs_journal *jrnp)
 
 unlock_and_exit:
 	KASSERT(jrnp->jrn_block_new_trans == true,
-	    "new transactions were allowed to start while checkpointing\n");
+	    ("new transactions were allowed to start while checkpointing\n"));
 
 	ext2_journal_revoke_table_clear(jrnp->jrn_revoke_table);
 
@@ -1506,9 +1506,7 @@ static int
 ext2_journal_commit_trans(struct ext2fs_journal *jrnp)
 {
 	struct ext2fs_journal_transaction *trans;
-	struct ext2_journal_buf *jbuf;
 	struct buf *sb_buf;
-	struct buf *disk_jbuf;
 	struct ext2fs_journal_sb *disk_sb;
 	struct vnode *jrn_vp = jrnp->jrn_vp;
 	struct ext2fs_journal_buf *jbuf;
@@ -1519,7 +1517,7 @@ ext2_journal_commit_trans(struct ext2fs_journal *jrnp)
 	EXT2_JTRACE_ENTER();
 	/* Ensure no active transaction while committing */
 	KASSERT(jrnp->jrn_active_trans != NULL,
-	    "ext2_journal_commit_trans: active trans\n");
+	    ("ext2_journal_commit_trans: active trans\n"));
 
 	EXT2_JLOCK(jrnp);
 	trans = jrnp->jrn_committing_trans;
@@ -2084,12 +2082,12 @@ ext2_journal_add_orphan(struct vnode *vp)
 	error = ext2_update(vp, 1);
 	/* TODO better error handling. */
 	if (error)
-		EXT2_JERROR("inode update on orphan\n")
+		EXT2_JERROR("inode update on orphan\n");
 	fs->e2fs->e3fs_last_orphan = ip->i_number;
 	fs->e2fs_fmod = 1;
 	error = ext2_sbupdate(ump, 1);
 	if (error)
-		EXT2_JERROR("sb update on orphan\n")
+		EXT2_JERROR("sb update on orphan\n");
 	TAILQ_INSERT_HEAD(&ump->um_orphan_list, ip, i_orphan_list);
 
 	return (error);

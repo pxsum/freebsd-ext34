@@ -1623,6 +1623,7 @@ ext2_symlink(struct vop_symlink_args *ap)
 		error = vn_rdwr(UIO_WRITE, vp, __DECONST(void *, ap->a_target),
 		    len, (off_t)0, UIO_SYSSPACE, IO_NODELOCKED | IO_NOMACCHECK,
 		    ap->a_cnp->cn_cred, NOCRED, NULL, NULL);
+	}
 	if (error)
 		vput(vp);
 	EXT2_JOURNAL_STOP(jrnp, error);
