@@ -543,11 +543,15 @@ ext2_extattr_inode_delete(struct inode *ip, int attrnamespace, const char *name)
 	struct buf *bp;
 	struct ext2fs_extattr_dinode_header *header;
 	struct ext2fs_extattr_entry *entry;
+	struct ext2mount *ump;
+	struct ext2fs_journal *jrnp;
 	const char *attr_name;
 	int name_len;
 	int error;
 
 	fs = ip->i_e2fs;
+	ump = ip->i_ump;
+	jrnp = ump->um_journal;
 
 	if ((error = bread(ip->i_devvp,
 	    fsbtodb(fs, ino_to_fsba(fs, ip->i_number)),
@@ -592,8 +596,11 @@ ext2_extattr_inode_delete(struct inode *ip, int attrnamespace, const char *name)
 		if (strlen(name) == name_len &&
 		    0 == strncmp(attr_name, name, name_len)) {
 			memset(header, 0, sizeof(struct ext2fs_extattr_dinode_header));
-
-			return (bwrite(bp));
+			if (EXT2_JACTIVE(jrnp))
+				error = ext2_journal_dirty_metadata(jrnp, bp);
+			else
+				error = bwrite(bp);
+			return (error);
 		}
 	}
 
@@ -617,7 +624,11 @@ ext2_extattr_inode_delete(struct inode *ip, int attrnamespace, const char *name)
 			    EXT2_IFIRST(header), entry,
 			    (char *)dinode + EXT2_INODE_SIZE(fs));
 
-			return (bwrite(bp));
+			if (EXT2_JACTIVE(jrnp))
+				error = ext2_journal_dirty_metadata(jrnp, bp);
+			else
+				error = bwrite(bp);
+			return (error);
 		}
 	}
 
@@ -633,10 +644,14 @@ ext2_extattr_block_clone(struct inode *ip, struct buf **bpp)
 	struct buf *sbp;
 	struct buf *cbp;
 	struct ext2fs_extattr_header *header;
+	struct ext2mount *ump;
+	struct ext2fs_journal *jrnp;
 	uint64_t facl;
 
 	fs = ip->i_e2fs;
 	sbp = *bpp;
+	ump = ip->i_ump;
+	jrnp = ump->um_journal;
 
 	header = EXT2_HDR(sbp);
 	if (le32toh(header->h_magic) != EXTATTR_MAGIC ||
@@ -655,8 +670,10 @@ ext2_extattr_block_clone(struct inode *ip, struct buf **bpp)
 
 	memcpy(cbp->b_data, sbp->b_data, fs->e2fs_bsize);
 	header->h_refcount = htole32(le32toh(header->h_refcount) - 1);
-	bwrite(sbp);
-
+	if (EXT2_JACTIVE(jrnp))
+		ext2_journal_dirty_metadata(jrnp, sbp);
+	else
+		bwrite(sbp);
 	ip->i_facl = facl;
 	ext2_update(ip->i_vnode, 1);
 
@@ -908,12 +925,16 @@ ext2_extattr_inode_set(struct inode *ip, int attrnamespace,
 	struct buf *bp;
 	struct ext2fs_extattr_dinode_header *header;
 	struct ext2fs_extattr_entry *entry;
+	struct ext2mount *ump;
+	struct ext2fs_journal *jrnp;
 	const char *attr_name;
 	int name_len;
 	size_t size = 0, max_size;
 	int error;
 
 	fs = ip->i_e2fs;
+	ump = ip->i_ump;
+	jrnp = ump->um_journal;
 
 	if ((error = bread(ip->i_devvp,
 	    fsbtodb(fs, ino_to_fsba(fs, ip->i_number)),
@@ -1002,8 +1023,12 @@ ext2_extattr_inode_set(struct inode *ip, int attrnamespace,
 		    EXT2_IFIRST(header), name, attrnamespace,
 		    (char *)header + max_size, uio);
 	}
-
-	return (bwrite(bp));
+	if (EXT2_JACTIVE(jrnp)) {
+		error = ext2_journal_dirty_metadata(jrnp, bp);
+	} else {
+		error = bwrite(bp);
+	}
+	return (error);
 }
 
 static void
@@ -1067,6 +1092,8 @@ ext2_extattr_block_set(struct inode *ip, int attrnamespace,
 {
 	struct m_ext2fs *fs;
 	struct buf *bp;
+	struct ext2mount *ump;
+	struct ext2fs_journal *jrnp;
 	struct ext2fs_extattr_header *header;
 	struct ext2fs_extattr_entry *entry;
 	const char *attr_name;
@@ -1075,6 +1102,8 @@ ext2_extattr_block_set(struct inode *ip, int attrnamespace,
 	int error;
 
 	fs = ip->i_e2fs;
+	ump = ip->i_ump;
+	jrnp = ump->um_journal;
 
 	if (ip->i_facl) {
 		error = bread(ip->i_devvp, fsbtodb(fs, ip->i_facl),
@@ -1160,8 +1189,11 @@ ext2_extattr_block_set(struct inode *ip, int attrnamespace,
 
 		ext2_extattr_rehash(header, entry);
 		ext2_extattr_blk_csum_set(ip, bp);
-
-		return (bwrite(bp));
+		if (EXT2_JACTIVE(jrnp))
+			error = ext2_journal_dirty_metadata(jrnp, bp);
+		else
+			error = bwrite(bp);
+		return (error);
 	}
 
 	size = ext2_extattr_get_size(NULL, NULL,
@@ -1209,7 +1241,11 @@ ext2_extattr_block_set(struct inode *ip, int attrnamespace,
 	ext2_extattr_rehash(header, entry);
 	ext2_extattr_blk_csum_set(ip, bp);
 
-	return (bwrite(bp));
+	if (EXT2_JACTIVE(jrnp))
+		error = ext2_journal_dirty_metadata(jrnp, bp);
+	else
+		error = bwrite(bp);
+	return (error);
 }
 
 int ext2_extattr_free(struct inode *ip)
