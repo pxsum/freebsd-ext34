@@ -348,5 +348,6 @@ int ext2_journal_del_orphan(struct vnode *vp);
 #define EXT2_JBCOUNT_RENAME	(100) // TODO, filler
 #define EXT2_JBCOUNT_SYMLINK	(100) // TODO, filler
 #define EXT2_JBCOUNT_SETEXTATTR	(100) // TODO, filler
+#define EXT2_JBCOUNT_DELEXTATTR	(100) // TODO, filler
 
 #endif	/* !_FS_EXT2FS_EXT2_JOURNAL_H_ */
