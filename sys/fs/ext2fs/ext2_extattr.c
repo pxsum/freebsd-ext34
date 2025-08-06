@@ -690,6 +690,8 @@ ext2_extattr_block_delete(struct inode *ip, int attrnamespace, const char *name)
 {
 	struct m_ext2fs *fs;
 	struct buf *bp;
+	struct ext2mount *ump;
+	struct ext2fs_journal *jrnp;
 	struct ext2fs_extattr_header *header;
 	struct ext2fs_extattr_entry *entry;
 	const char *attr_name;
@@ -697,6 +699,8 @@ ext2_extattr_block_delete(struct inode *ip, int attrnamespace, const char *name)
 	int error;
 
 	fs = ip->i_e2fs;
+	ump = ip->i_ump;
+	jrnp = ump->um_journal;
 
 	error = bread(ip->i_devvp, fsbtodb(fs, ip->i_facl),
 	    fs->e2fs_bsize, NOCRED, &bp);
@@ -771,7 +775,11 @@ ext2_extattr_block_delete(struct inode *ip, int attrnamespace, const char *name)
 			    EXT2_FIRST_ENTRY(bp), entry,
 			    bp->b_data + bp->b_bufsize);
 
-			return (bwrite(bp));
+			if (EXT2_JACTIVE(jrnp))
+				error = ext2_journal_dirty_metadata(jrnp, bp);
+			else
+				error = bwrite(bp);
+			return (error);
 		}
 	}
 

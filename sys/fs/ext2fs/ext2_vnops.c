@@ -1851,10 +1851,14 @@ ext2_deleteextattr(struct vop_deleteextattr_args *ap)
 {
 	struct inode *ip;
 	struct m_ext2fs *fs;
+	struct ext2mount *ump;
+	struct ext2fs_journal *jrnp;
 	int error;
 
 	ip = VTOI(ap->a_vp);
 	fs = ip->i_e2fs;
+	ump = ip->i_ump;
+	jrnp = ump->um_journal;
 
 	if (!EXT2_HAS_COMPAT_FEATURE(ip->i_e2fs, EXT2F_COMPAT_EXT_ATTR))
 		return (EOPNOTSUPP);
@@ -1867,8 +1871,13 @@ ext2_deleteextattr(struct vop_deleteextattr_args *ap)
 	if (error)
 		return (error);
 
-	error = ENOATTR;
+	if (EXT2_JPRESENT(jrnp)) {
+		error = ext2_journal_start(jrnp, EXT2_JBCOUNT_DELEXTATTR);
+		if (error) {
+		}
+	}
 
+	error = ENOATTR;
 	if (EXT2_INODE_SIZE(fs) != E2FS_REV0_INODE_SIZE) {
 		error = ext2_extattr_inode_delete(ip, ap->a_attrnamespace, ap->a_name);
 		if (error != ENOATTR)
@@ -1878,6 +1887,7 @@ ext2_deleteextattr(struct vop_deleteextattr_args *ap)
 	if (ip->i_facl)
 		error = ext2_extattr_block_delete(ip, ap->a_attrnamespace, ap->a_name);
 
+	error = ext2_journal_stop(jrnp);
 	return (error);
 }
 
