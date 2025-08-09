@@ -140,13 +140,12 @@ ext2_journal_open_inode(struct mount *mp, struct vnode **vpp,
 		EXT2_JTRACE_EXIT(error);
 		return (error);
 	}
-
 	/* bufobj size must be initilized else panics */
 	if ((*vpp)->v_bufobj.bo_bsize == 0) {
 	    (*vpp)->v_bufobj.bo_bsize = fs->e2fs_bsize;
 	}
-
-	error = bread(*vpp, 0, (daddr_t) fs->e2fs_bsize, NOCRED, &jrn_buf);
+	/* NOTE: panic when reading blocks 12+ */
+	error = bread(*vpp,12, fs->e2fs_bsize, NOCRED, &jrn_buf);
 	if (error != 0) {
 		EXT2_JERROR("bread failed: %d\n", error);
 		vput(*vpp);
