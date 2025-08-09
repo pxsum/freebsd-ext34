@@ -406,7 +406,12 @@ ext2_setattr(struct vop_setattr_args *ap)
 	struct inode *ip = VTOI(vp);
 	struct ucred *cred = ap->a_cred;
 	struct thread *td = curthread;
+	struct ext2mount *ump;
+	struct ext2fs_journal *jrnp;
 	int error;
+
+	ump = ip->i_ump;
+	jrnp = ump->um_journal;
 
 	/*
 	 * Check for unsettable attributes.
@@ -496,6 +501,8 @@ ext2_setattr(struct vop_setattr_args *ap)
 		 * If times is non-NULL, ... The caller must be the owner of
 		 * the file or be the super-user.
 		 */
+		if (EXT2_JPRESENT(jrnp))
+			ext2_journal_start(jrnp, EXT2_JBCOUNT_INODE);
 		if ((error = VOP_ACCESS(vp, VADMIN, cred, td)) &&
 		    ((vap->va_vaflags & VA_UTIMES_NULL) == 0 ||
 		    (error = VOP_ACCESS(vp, VWRITE, cred, td))))
@@ -515,7 +522,8 @@ ext2_setattr(struct vop_setattr_args *ap)
 			ip->i_birthtime = vap->va_birthtime.tv_sec;
 			ip->i_birthnsec = vap->va_birthtime.tv_nsec;
 		}
-		error = ext2_update(vp, 0);
+		error = ext2_update(vp, 1);
+		ext2_journal_stop(jrnp);
 		if (error)
 			return (error);
 	}
@@ -536,7 +544,12 @@ static int
 ext2_chmod(struct vnode *vp, int mode, struct ucred *cred, struct thread *td)
 {
 	struct inode *ip = VTOI(vp);
-	int error;
+	struct ext2mount *ump;
+	struct ext2fs_journal *jrnp;
+	int error = 0;
+
+	ump = ip->i_ump;
+	jrnp = ump->um_journal;
 
 	/*
 	 * To modify the permissions on a file, must possess VADMIN
@@ -559,10 +572,17 @@ ext2_chmod(struct vnode *vp, int mode, struct ucred *cred, struct thread *td)
 		if (error)
 			return (error);
 	}
+	if (EXT2_JPRESENT(jrnp))
+		ext2_journal_start(jrnp, EXT2_JBCOUNT_FILLER);
 	ip->i_mode &= ~ALLPERMS;
 	ip->i_mode |= (mode & ALLPERMS);
 	ip->i_flag |= IN_CHANGE;
-	return (0);
+	if (EXT2_JACTIVE(jrnp)) {
+		ext2_update(vp, 1);
+		error = ext2_journal_stop(jrnp);
+	}
+
+	return (error);
 }
 
 /*
@@ -574,9 +594,14 @@ ext2_chown(struct vnode *vp, uid_t uid, gid_t gid, struct ucred *cred,
     struct thread *td)
 {
 	struct inode *ip = VTOI(vp);
+	struct ext2mount *ump;
+	struct ext2fs_journal *jrnp;
 	uid_t ouid;
 	gid_t ogid;
 	int error = 0;
+
+	ump = ip->i_ump;
+	jrnp = ump->um_journal;
 
 	if (uid == (uid_t)VNOVAL)
 		uid = ip->i_uid;
@@ -599,6 +624,11 @@ ext2_chown(struct vnode *vp, uid_t uid, gid_t gid, struct ucred *cred,
 		if (error)
 			return (error);
 	}
+	if (EXT2_JPRESENT(jrnp)) {
+		error = ext2_journal_start(jrnp, EXT2_JBCOUNT_INODE);
+		if (error) {
+		}
+	}
 	ogid = ip->i_gid;
 	ouid = ip->i_uid;
 	ip->i_gid = gid;
@@ -608,7 +638,10 @@ ext2_chown(struct vnode *vp, uid_t uid, gid_t gid, struct ucred *cred,
 		if (priv_check_cred(cred, PRIV_VFS_RETAINSUGID) != 0)
 			ip->i_mode &= ~(ISUID | ISGID);
 	}
-	return (0);
+	if (EXT2_JACTIVE(jrnp))
+		ext2_update(vp, 1);
+	error = ext2_journal_stop(jrnp);
+	return (error);
 }
 
 /*

@@ -296,7 +296,7 @@ int ext2_journal_add_orphan(struct vnode *vp);
 int ext2_journal_del_orphan(struct vnode *vp);
 
 #define EXT2_JPRESENT(jrnp) ((jrnp) != NULL)
-#define EXT2_JACTIVE(jrnp) ((jrnp) && (jrnp)->jrn_active_trans)
+#define EXT2_JACTIVE(jrnp) ((EXT2_JPRESENT(jrnp)) && (jrnp)->jrn_active_trans)
 
 /*
  * Macros for number of blocks needed to journal calls.
@@ -308,6 +308,7 @@ int ext2_journal_del_orphan(struct vnode *vp);
 #define EXT2_JBCOUNT_BMP      1 /* Bitmap block (for inodes or data) */
 #define EXT2_JBCOUNT_INODE    1 /* Inode table block */
 #define EXT2_JBCOUNT_INDIRECT 1 /* Indirect block */
+#define EXT2_JBCOUNT_FILLER	100
 
 /* New block works for creating new inode. */
 #define EXT2_JBCOUNT_NEWINODE                                      \
