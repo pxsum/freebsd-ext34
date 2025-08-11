@@ -769,36 +769,6 @@ fail_sb:
 	return (error);
 }
 
-
-/*
- * Buffer i/o completion callback to ensure data blocks written before metadata
- * in ordered-mode.
- */
-static void
-ext2_journal_biodone(struct buf *bp)
-{
-	struct ext2fs_journal_buf *jbuf;
-	struct ext2fs_journal_transaction *trans;
-	struct ext2fs_journal *jrnp;
-
-	EXT2_JTRACE_ENTER();
-
-	jbuf = bp->b_fsprivate1;
-	trans = jbuf->jb_owning_trans;
-	jrnp = trans->jt_journal;
-
-	mtx_lock(&jrnp->jrn_lock);
-	trans->jt_pending_data--;
-
-	if (trans->jt_pending_data == 0) {
-		/* All data I/O complete so signal waiters */
-		cv_broadcast(&trans->jt_iowait_cv);
-	}
-
-	mtx_unlock(&jrnp->jrn_lock);
-	EXT2_JTRACE_EXIT(0);
-}
-
 /*
  * Allocate and initialize a journal buffer.
  */
@@ -888,12 +858,10 @@ ext2_journal_transaction_alloc(struct ext2fs_journal *journal)
 	trans->jt_blocks_reserved = 0;
 	trans->jt_data_count = 0;
 	trans->jt_metadata_count = 0;
-	trans->jt_pending_data = 0;
 
 	TAILQ_INIT(&trans->jt_data_buffers);
 	TAILQ_INIT(&trans->jt_metadata_buffers);
 	TAILQ_INIT(&trans->jt_revoke_list);
-	cv_init(&trans->jt_iowait_cv, "jrn_iowait");
 
 	return (trans);
 }
@@ -909,18 +877,10 @@ ext2_journal_transaction_free(struct ext2fs_journal_transaction *trans)
 
 	if (trans == NULL)
 		return;
-
-	/* issue if still waiting for data writes */
-	KASSERT(trans->jt_pending_data == 0,
-	    ("ext2_journal_transaction_free: pending I/O"));
-
 	/* Free all journal buffer descriptors */
 	ext2_journal_buf_free_list(&trans->jt_data_buffers);
 	ext2_journal_buf_free_list(&trans->jt_metadata_buffers);
 	ext2_journal_revoke_list_clear(&trans->jt_revoke_list);
-
-	/* Destroy condition variable */
-	cv_destroy(&trans->jt_iowait_cv);
 
 	free(trans, M_EXT2JTRANS);
 }
@@ -959,7 +919,6 @@ ext2_journal_dirty_data(struct ext2fs_journal *jrnp, struct buf *bp)
 	EXT2_JLOCK(jrnp);
 	TAILQ_INSERT_TAIL(&trans->jt_data_buffers, jbuf, jb_list);
 	trans->jt_data_count++;
-	trans->jt_pending_data++;
 
 	EXT2_JUNLOCK(jrnp);
 	EXT2_JTRACE_EXIT(0);
@@ -1150,7 +1109,6 @@ retry:
 	trans->jt_refcount = 1;
 	trans->jt_owner = td;
 	trans->jt_blocks_reserved = nblocks;
-	trans->jt_pending_data = 0;
 
 	jrnp->jrn_free_blocks -= required_blocks;
 

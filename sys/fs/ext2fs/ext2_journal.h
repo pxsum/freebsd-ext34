@@ -231,9 +231,6 @@ struct ext2fs_journal_transaction {
 
 	/* List of checkpoint transaction */
 	TAILQ_ENTRY(ext2fs_journal_transaction) jt_checkpoint_entry;
-
-	int jt_pending_data;
-	struct cv jt_iowait_cv;
 };
 
 struct vnode;

@@ -59,7 +59,6 @@
         printf("blocks_reserved: %d\n", (trans)->jt_blocks_reserved); \
         printf("data_buffers:    %d\n", (trans)->jt_data_count); \
         printf("metadata_buffers:%d\n", (trans)->jt_metadata_count); \
-        printf("pending_data:    %d\n", (trans)->jt_pending_data); \
         printf("==========================\n\n"); \
     } else { \
         printf("EXT2J: NULL transaction pointer\n"); \
