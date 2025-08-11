@@ -2029,6 +2029,7 @@ ext2_journal_del_orphan(struct vnode *vp)
 	prev_ip = TAILQ_PREV(cur_ip, orphan_list_head, i_orphan_list);
 	next_ip = TAILQ_NEXT(cur_ip, i_orphan_list);
 	if (prev_ip) {
+	if (prev_ip != NULL) {
 		prev_ip->i_dtime = (next_ip) ? next_ip->i_number : 0;
 	} else {
 		/* Removing head orphan inode. */
@@ -2046,7 +2047,7 @@ ext2_journal_del_orphan(struct vnode *vp)
 	 * The order in which we update these should not matter
 	 * since they should be journaled as one atomic trans.
 	 */
-	if (prev_ip)
+	if (prev_ip != NULL)
 		ext2_update(prev_ip->i_vnode, 1);
 	ext2_update(cur_ip->i_vnode, 1);
 	if (updatesb)
