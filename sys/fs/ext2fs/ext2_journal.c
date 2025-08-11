@@ -2088,7 +2088,8 @@ ext2_journal_del_orphan(struct vnode *vp)
 	 * The order in which we update these should not matter
 	 * since they should be journaled as one atomic trans.
 	 */
-	ext2_update(prev_ip->i_vnode, 1);
+	if (prev_ip)
+		ext2_update(prev_ip->i_vnode, 1);
 	ext2_update(cur_ip->i_vnode, 1);
 	if (updatesb)
 		ext2_sbupdate(ump, 1);
