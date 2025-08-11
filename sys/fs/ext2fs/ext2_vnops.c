@@ -2434,10 +2434,17 @@ ext2_write(struct vop_write_args *ap)
 		flags |= IO_SYNC;
 
 	for (error = 0; uio->uio_resid > 0;) {
-forloop:
 		if (EXT2_JPRESENT(jrnp)) {
-			error = ext2_journal_start(jrnp, EXT2_JBCOUNT_WRITE);
-			if (error) {
+			if (vp->v_type == VDIR || vp->v_type == VLNK) {
+				KASSERT(jrnp->jrn_active_trans != NULL,
+				    ("ext2_write: NULL active trans"));
+				KASSERT(jrnp->jrn_active_trans->jt_refcount > 0,
+				    ("ext2_write: refcount < 1"));
+			} else {
+				error = ext2_journal_start(jrnp,
+				    EXT2_JBCOUNT_WRITE);
+				if (error) {
+				}
 			}
 		}
 		lbn = lblkno(fs, uio->uio_offset);
@@ -2494,16 +2501,29 @@ forloop:
 
 		vfs_bio_set_flags(bp, ioflag);
 
-		/* If journaling is active and we are updating metadata, journal */
-		if ((EXT2_JACTIVE(jrnp)) &&
-			(vp->v_type == VDIR || vp->v_type == VLNK)) {
-			EXT2_JPRINTF("write to directory data\n");
-			error = ext2_journal_dirty_metadata(jrnp, bp);
-			if (error) {
-				brelse(bp);
-				break;
+		if (EXT2_JACTIVE(jrnp)) {
+			if (vp->v_type == VDIR || vp->v_type == VLNK) {
+				error = ext2_journal_dirty_metadata(jrnp, bp);
+				if (error) {
+					brelse(bp);
+					break;
+				}
+			} else {
+				error = ext2_journal_dirty_data(jrnp, bp);
+				if (error) {
+					brelse(bp);
+					ext2_journal_stop(jrnp);
+					break;
+				}
+				error = bwrite(bp);
+				if (!error) {
+					ext2_update(vp, 1);
+				}
+				ext2_journal_stop(jrnp);
+				if (error) {
+					break;
+				}
 			}
-			goto jrnpath;
 		/*
 		 * If IO_SYNC each buffer is written synchronously.  Otherwise
 		 * if we have a severe page deficiency write the buffer
@@ -2512,23 +2532,12 @@ forloop:
 		 * or a delayed write (if not).
 		 */
 		} else if (ioflag & IO_SYNC) {
-			if (EXT2_JACTIVE(jrnp)) {
-				error = ext2_journal_dirty_data(jrnp, bp);
-				if (error) {
-				}
-			}
 			(void)bwrite(bp);
 		} else if (vm_page_count_severe() ||
 			    buf_dirty_count_severe() ||
 		    (ioflag & IO_ASYNC)) {
-			if (EXT2_JACTIVE(jrnp)) {
-				error = ext2_journal_dirty_data(jrnp, bp);
-				if (error) {
-				}
-			}
 			bp->b_flags |= B_CLUSTEROK;
 			bawrite(bp);
-		/* TODO journal */
 		} else if (xfersize + blkoffset == fs->e2fs_fsize) {
 			if ((vp->v_mount->mnt_flag & MNT_NOCLUSTERW) == 0) {
 				bp->b_flags |= B_CLUSTEROK;
@@ -2538,26 +2547,15 @@ forloop:
 				bawrite(bp);
 			}
 		} else if (ioflag & IO_DIRECT) {
-			if (EXT2_JACTIVE(jrnp)) {
-				error = ext2_journal_dirty_data(jrnp, bp);
-				if (error) {
-				}
-			}
 			bp->b_flags |= B_CLUSTEROK;
 			bawrite(bp);
 		} else {
-			if (EXT2_JACTIVE(jrnp)) {
-				error = ext2_journal_dirty_data(jrnp, bp);
-				if (error) {
-				}
-			}
 			bp->b_flags |= B_CLUSTEROK;
 			bdwrite(bp);
 		}
 		if (error || xfersize == 0)
 			break;
 	}
-jrnpath:
 	/*
 	 * If we successfully wrote any data, and we are not the superuser
 	 * we clear the setuid and setgid bits as a precaution against
@@ -2581,13 +2579,6 @@ jrnpath:
 		if (ioflag & IO_SYNC)
 			error = ext2_update(vp, 1);
 	}
-	if (EXT2_JACTIVE(jrnp)) {
-		error = ext2_journal_stop(jrnp);
-		if (error) {
-		}
-	}
-	if (uio->uio_resid > 0)
-		goto forloop;
 
 	return (error);
 }
