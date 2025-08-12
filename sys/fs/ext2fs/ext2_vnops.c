@@ -651,13 +651,45 @@ ext2_chown(struct vnode *vp, uid_t uid, gid_t gid, struct ucred *cred,
 static int
 ext2_fsync(struct vop_fsync_args *ap)
 {
+	struct inode *ip = VTOI(ap->a_vp);
+	struct ext2mount *ump;
+	struct ext2fs_journal *jrnp;
+	struct ext2fs_journal_transaction *trans;
+	int error;
+	ump = ip->i_ump;
+	jrnp = ump->um_journal;
 	/*
 	 * Flush all dirty buffers associated with a vnode.
 	 */
+	if (!EXT2_JPRESENT(jrnp)) {
+		vop_stdfsync(ap);
+		return (ext2_update(ap->a_vp, ap->a_waitfor == MNT_WAIT));
+	}
 
-	vop_stdfsync(ap);
 
-	return (ext2_update(ap->a_vp, ap->a_waitfor == MNT_WAIT));
+	EXT2_JLOCK(jrnp);
+	trans = jrnp->jrn_active_trans;
+	if (trans == NULL) {
+		EXT2_JUNLOCK(jrnp);
+		return (0);
+	}
+
+	jrnp->jrn_sync = true;
+	/*
+	 *  Wait for active operation to finish, then commit.
+	 */
+	while (trans && trans->jt_refcount > 0) {
+		cv_wait(&jrnp->jrn_sync_cv, &jrnp->jrn_lock);
+		trans = jrnp->jrn_active_trans;
+	}
+	if (trans && trans->jt_refcount == 0) {
+		jrnp->jrn_committing_trans = trans;
+		jrnp->jrn_active_trans = NULL;
+	}
+	EXT2_JUNLOCK(jrnp);
+	/* This commit clears sync flag and signals file ops to start. */
+	error = ext2_journal_commit_trans(jrnp);
+	return (error);
 }
 
 static int

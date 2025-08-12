@@ -1060,12 +1060,10 @@ ext2_unmount(struct mount *mp, int mntflags)
 
 	/*
 	 * With journaling, wait for current transaction to complete.
-	 * Then, commit transaction.
-	 * Checkpoint journal, ie move data to real location.
-	 * Then call flushfiles which I think should just be a NOP now.
+	 * Then commit transaction and checkpoint journal.
+	 * I think the flushfiles call should just be a NOP now.
 	 */
-	if (jrnp) {
-		ext2_journal_block_new_tran(jrnp);
+	if (EXT2_JPRESENT(jrnp)) {
 		error = ext2_journal_force_commit(jrnp);
 		if (error) {
 			EXT2_JERROR("ext2_force_commit error: %d\n", error);
@@ -1186,10 +1184,12 @@ ext2_sync(struct mount *mp, int waitfor)
 	struct inode *ip;
 	struct ext2mount *ump = VFSTOEXT2(mp);
 	struct m_ext2fs *fs;
+	struct ext2fs_journal *jrnp;
 	int error, allerror = 0;
 
 	td = curthread;
 	fs = ump->um_e2fs;
+	jrnp = ump->um_journal;
 	if (fs->e2fs_fmod != 0 && fs->e2fs_ronly != 0) {		/* XXX */
 		panic("ext2_sync: rofs mod fs=%s", fs->e2fs_fsmnt);
 	}
@@ -1204,6 +1204,21 @@ loop:
 			continue;
 		}
 		ip = VTOI(vp);
+		/* Ensure we always fsync journal inode */
+		if (EXT2_JPRESENT(jrnp) && ip->i_number == EXT2_JOURNALINO) {
+			error = vget(vp,
+			    LK_EXCLUSIVE | LK_NOWAIT | LK_INTERLOCK);
+			if (error) {
+				if (error == ENOENT) {
+					MNT_VNODE_FOREACH_ALL_ABORT(mp, mvp);
+					goto loop;
+				}
+				continue;
+			}
+			if ((error = VOP_FSYNC(vp, waitfor, td)) != 0)
+				allerror = error;
+			continue;
+		}
 		if ((ip->i_flag &
 		    (IN_ACCESS | IN_CHANGE | IN_MODIFIED | IN_UPDATE)) == 0 &&
 		    (vp->v_bufobj.bo_dirty.bv_cnt == 0 ||
@@ -1234,17 +1249,13 @@ loop:
 		VOP_UNLOCK(ump->um_devvp);
 	}
 
-	/*
-	 * FIXME For journaling skip this for now
-	 *
-	 * Write back modified superblock.
-	if (fs->e2fs_fmod != 0) {
+	/* If journaling, the commit would have journaled the sb. */
+	if (!EXT2_JPRESENT(jrnp) && fs->e2fs_fmod != 0) {
 		fs->e2fs_fmod = 0;
 		fs->e2fs->e2fs_wtime = htole32(time_second);
 		if ((error = ext2_cgupdate(ump, waitfor)) != 0)
 			allerror = error;
 	}
-	*/
 	return (allerror);
 }
 

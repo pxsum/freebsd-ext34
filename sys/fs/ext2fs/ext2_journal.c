@@ -634,15 +634,12 @@ ext2_journal_init(struct ext2fs_journal *jrnp)
 	mtx_init(&jrnp->jrn_lock, "ext2jrnl", NULL, MTX_DEF);
 	cv_init(&jrnp->jrn_trans_commit_cv, "ext2jrn_commit_cv");
 	cv_init(&jrnp->jrn_trans_start_cv, "ext2jrn_start_cv");
-	cv_init(&jrnp->jrn_trans_block_cv, "ext2jrn_block_cv");
-	cv_init(&jrnp->jrn_space_cv, "ext2jrn_space_cv");
+	cv_init(&jrnp->jrn_sync_cv, "ext2jrn_sync_cv");
 
 	jrnp->jrn_active_trans = NULL;
 	jrnp->jrn_committing_trans = NULL;
 	TAILQ_INIT(&jrnp->jrn_checkpoint_list);
 	jrnp->jrn_revoke_table = ext2_journal_revoke_table_create();
-
-	jrnp->jrn_block_new_trans = false;
 
 	jrnp->jrn_sequence = be32toh(disk_sb->jsb_sequence_id);
 	jrnp->jrn_blocksize = be32toh(disk_sb->jsb_blocksize);
@@ -663,8 +660,7 @@ ext2_journal_init(struct ext2fs_journal *jrnp)
 		mtx_destroy(&jrnp->jrn_lock);
 		cv_destroy(&jrnp->jrn_trans_commit_cv);
 		cv_destroy(&jrnp->jrn_trans_start_cv);
-		cv_destroy(&jrnp->jrn_trans_block_cv);
-		cv_destroy(&jrnp->jrn_space_cv);
+		cv_destroy(&jrnp->jrn_sync_cv);
 		EXT2_JTRACE_EXIT(EINVAL);
 		return (EINVAL);
 	}
@@ -694,8 +690,7 @@ ext2_journal_close(struct ext2fs_journal *jrnp)
 		return (0);
 
 	if (jrnp->jrn_vp != NULL) {
-		VOP_LOCK(jrnp->jrn_vp, LK_EXCLUSIVE);
-		vput(jrnp->jrn_vp);
+		vrele(jrnp->jrn_vp);
 	}
 
 	if (jrnp->jrn_sb != NULL)
@@ -707,8 +702,7 @@ ext2_journal_close(struct ext2fs_journal *jrnp)
 	mtx_destroy(&jrnp->jrn_lock);
 	cv_destroy(&jrnp->jrn_trans_commit_cv);
 	cv_destroy(&jrnp->jrn_trans_start_cv);
-	cv_destroy(&jrnp->jrn_trans_block_cv);
-	cv_destroy(&jrnp->jrn_space_cv);
+	cv_destroy(&jrnp->jrn_sync_cv);
 
 	jrnp->jrn_em->um_journal = NULL;
 
@@ -848,7 +842,7 @@ ext2_journal_transaction_alloc(struct ext2fs_journal *journal)
 	EXT2_JTRACE_ENTER();
 
 	trans = malloc(sizeof(struct ext2fs_journal_transaction), M_EXT2JTRANS,
-	    M_WAITOK | M_ZERO);
+	    M_ZERO);
 
 	trans->jt_journal = journal;
 	trans->jt_state = EXT2_TRANS_RUNNING;
@@ -1049,74 +1043,47 @@ ext2_journal_start(struct ext2fs_journal *jrnp, int nblocks)
 	EXT2_JTRACE_ENTER();
 retry:
 	EXT2_JLOCK(jrnp);
-	while ((trans = jrnp->jrn_active_trans) != NULL) {
-		/* Same thread so must be a nested file operation */
-		/*
-		 * In a nested operation, assume the initial reservation was
-		 * enough.
-		 */
-		if (trans->jt_owner == td) {
-			trans->jt_refcount++;
-			trans->jt_blocks_reserved += nblocks;
-			jrnp->jrn_free_blocks -= nblocks;
-			EXT2_JUNLOCK(jrnp);
-			EXT2_JPRINTF("journal start joined nested operation\n");
-			EXT2_JTRACE_EXIT(0);
-			return (0);
-		}
+	trans = jrnp->jrn_active_trans;
 
-		/* Wait to start a new trans */
+	/* Another file op is active. */
+	while ((trans && trans->jt_refcount > 0)) {
 		cv_wait(&jrnp->jrn_trans_start_cv, &jrnp->jrn_lock);
-	}
-
-	/*
-	 * We wait for the commit to finish since a new transaction might need
-	 * to write to a block that is part of the committing transaction. If
-	 * we naively write to a committing block, we can corrupt the
-	 * transaction. We can do COW to not wait but just wait for now.
-	 */
-	while (jrnp->jrn_committing_trans != NULL) {
-		cv_wait(&jrnp->jrn_trans_commit_cv, &jrnp->jrn_lock);
-	}
-
-	while (required_blocks > jrnp->jrn_free_blocks) {
-		// we assume here there are commiting transactions / transactions to checkpoint to free journal space
-		cv_wait(&jrnp->jrn_space_cv, &jrnp->jrn_lock);
-	}
-
-	/*
-	 * Check if new transactions are prevented from starting.
-	 *
-	 * The idea is to prevent new transaction from starting while
-	 * checkpointing for now.
-	 */
-	while (jrnp->jrn_block_new_trans) {
-		cv_wait(&jrnp->jrn_trans_block_cv, &jrnp->jrn_lock);
-	}
-
-	EXT2_JUNLOCK(jrnp);
-	/* Start new transaction */
-	trans = ext2_journal_transaction_alloc(jrnp);
-	EXT2_JLOCK(jrnp);
-	if (jrnp->jrn_active_trans != NULL ||
-	    required_blocks > jrnp->jrn_free_blocks) {
-		EXT2_JUNLOCK(jrnp);
-		ext2_journal_transaction_free(trans);
 		goto retry;
 	}
-	trans->jt_journal = jrnp;
-	trans->jt_state = EXT2_TRANS_RUNNING;
-	trans->jt_refcount = 1;
-	trans->jt_owner = td;
-	trans->jt_blocks_reserved = nblocks;
+	/* A transaction is commiting, wait. */
+	while (jrnp->jrn_committing_trans != NULL) {
+		cv_wait(&jrnp->jrn_trans_commit_cv, &jrnp->jrn_lock);
+		goto retry;
+	}
+	/* Checkpoint to free up space and start a new transaction. */
+	if (required_blocks > jrnp->jrn_free_blocks) {
+		if (trans != NULL) {
+			jrnp->jrn_committing_trans = trans;
+			jrnp->jrn_active_trans = NULL;
+		}
 
-	jrnp->jrn_free_blocks -= required_blocks;
+		EXT2_JUNLOCK(jrnp);
+		if (jrnp->jrn_committing_trans)
+			ext2_journal_commit_trans(jrnp);
+		ext2_journal_checkpoint_trans(jrnp);
+		goto retry;
+	}
 
-	EXT2_JPRINTF("new transaction started\n");
+	if (trans != NULL) {
+		trans->jt_owner = td;
+		trans->jt_refcount = 1;
+		trans->jt_blocks_reserved += required_blocks;
+		jrnp->jrn_free_blocks -= required_blocks;
+	} else {
+		trans = ext2_journal_transaction_alloc(jrnp);
+		trans->jt_owner = td;
+		trans->jt_refcount = 1;
+		trans->jt_blocks_reserved = required_blocks;
+		jrnp->jrn_free_blocks -= required_blocks;
+		jrnp->jrn_active_trans = trans;
+	}
 
-	jrnp->jrn_active_trans = trans;
 	EXT2_JUNLOCK(jrnp);
-
 	EXT2_JTRACE_EXIT(0);
 	return (0);
 }
@@ -1412,9 +1379,6 @@ ext2_journal_checkpoint_trans(struct ext2fs_journal *jrnp)
 #endif
 		}
 
-		/* Wake up threads waiting for more journal space */
-		cv_signal(&jrnp->jrn_space_cv);
-
 #if defined(ENABLE_CHECKPOINT_WRITE)
 		/*
 		 * Update the on-disk journal superblock to make the free space
@@ -1449,19 +1413,15 @@ unlock_and_exit:
 	    ("new transactions were allowed to start while checkpointing\n"));
 
 	ext2_journal_revoke_table_clear(jrnp->jrn_revoke_table);
-
-	jrnp->jrn_block_new_trans = false;
-	cv_signal(&jrnp->jrn_trans_block_cv);
 	EXT2_JUNLOCK(jrnp);
 	EXT2_JTRACE_EXIT(0);
 	return (0);
 }
 
-static int
+int
 ext2_journal_commit_trans(struct ext2fs_journal *jrnp)
 {
 	struct ext2fs_journal_transaction *trans;
-	struct ext2fs_journal_buf *jbuf;
 	uint32_t jrn_blknu;
 	int error = 0;
 
@@ -1477,20 +1437,6 @@ ext2_journal_commit_trans(struct ext2fs_journal *jrnp)
 
 	EXT2_JPRINT_TRANS(trans);
 	EXT2_JPRINT_TRANS_BUFFERS(trans);
-	/* Wait for all data I/O to finish. */
-	EXT2_JUNLOCK(jrnp);
-	// FIXME
-	TAILQ_FOREACH(jbuf, &trans->jt_data_buffers, jb_list) {
-		struct buf *bp = jbuf->jb_buf;
-		BUF_LOCK(bp, LK_EXCLUSIVE, NULL);
-		bufwait(bp);
-		BUF_UNLOCK(bp);
-	}
-
-	EXT2_JPRINTF("All data i/o to wait on done\n");
-
-	EXT2_JLOCK(jrnp);
-	EXT2_JPRINTF("All data I/O completed\n");
 	trans->jt_state = EXT2_TRANS_COMMIT;
 
 
@@ -1547,9 +1493,12 @@ ext2_journal_commit_trans(struct ext2fs_journal *jrnp)
 	TAILQ_INSERT_TAIL(&jrnp->jrn_checkpoint_list, trans,
 	    jt_checkpoint_entry);
 	jrnp->jrn_committing_trans = NULL;
+	jrnp->jrn_sync = false;
 
 	/* Wake up threads waiting on commit */
-	cv_signal(&jrnp->jrn_trans_commit_cv);
+	/* Wake up threads waiting on start and commit signal. */
+	cv_broadcast(&jrnp->jrn_trans_start_cv);
+	cv_broadcast(&jrnp->jrn_trans_commit_cv);
 	EXT2_JUNLOCK(jrnp);
 
 	EXT2_JTRACE_EXIT(0);
@@ -1560,7 +1509,7 @@ cleanup:
 	jrnp->jrn_flags |= EXT2_JOURNAL_ABORTED;
 	jrnp->jrn_committing_trans = NULL;
 
-	cv_signal(&jrnp->jrn_trans_commit_cv);
+	cv_broadcast(&jrnp->jrn_trans_start_cv);
 	EXT2_JUNLOCK(jrnp);
 
 	ext2_journal_transaction_free(trans);
@@ -1578,7 +1527,6 @@ ext2_journal_stop(struct ext2fs_journal *jrnp)
 {
 	struct ext2fs_journal_transaction *trans;
 	struct thread *td = curthread;
-	bool should_commit = false;
 
 	EXT2_JTRACE_ENTER();
 
@@ -1595,24 +1543,16 @@ ext2_journal_stop(struct ext2fs_journal *jrnp)
 
 	trans->jt_refcount--;
 	if (trans->jt_refcount == 0) {
-		/* Last reference so commit for now */
-		/* Can optimize later */
-		jrnp->jrn_active_trans = NULL;
-		jrnp->jrn_committing_trans = trans;
-		should_commit = true;
-
-		/* Wake up any threads waiting to start new transaction */
-		// FIXME do not start a transaction if commiting
-		cv_signal(&jrnp->jrn_trans_start_cv);
+		if (jrnp->jrn_sync) {
+			/* Sync/fsync was called, send signal to commit */
+			cv_broadcast(&jrnp->jrn_sync_cv);
+		} else {
+			/* Send signal to start new file op. */
+			cv_broadcast(&jrnp->jrn_trans_start_cv);
+		}
 	}
 
 	EXT2_JUNLOCK(jrnp);
-	if (should_commit) {
-		EXT2_JPRINTF("Journal comitting\n");
-		// TODO maybe just hold lock while calling here
-		return ext2_journal_commit_trans(jrnp);
-	}
-
 	EXT2_JTRACE_EXIT(0);
 	return (0);
 }
@@ -1621,34 +1561,28 @@ ext2_journal_stop(struct ext2fs_journal *jrnp)
  * Force a journal commit.
  */
 int
-ext2_journal_force_commit(struct ext2fs_journal *jrnp) {
+ext2_journal_force_commit(struct ext2fs_journal *jrnp)
+{
 	struct ext2fs_journal_transaction *trans;
 
-	mtx_lock(&jrnp->jrn_lock);
 
-	/* Wait for active transactions to finish */
-	while ((trans = jrnp->jrn_active_trans) != NULL) {
-		cv_wait(&jrnp->jrn_trans_commit_cv, &jrnp->jrn_lock);
+	EXT2_JLOCK(jrnp);
+	/* Wait for active atomic operation to finish */
+	while ((trans = jrnp->jrn_active_trans) != NULL &&
+	    trans->jt_refcount > 0) {
+		cv_wait(&jrnp->jrn_trans_start_cv, &jrnp->jrn_lock);
 	}
 
 	/* Commit the transaction that just finished */
-	if (jrnp->jrn_committing_trans == NULL) {
+	if (trans && jrnp->jrn_committing_trans == NULL) {
 		jrnp->jrn_committing_trans = trans;
-		mtx_unlock(&jrnp->jrn_lock);
-		return ext2_journal_commit_trans(jrnp);
+		// TODO
+		// jrnp->jrn_active_trans = NULL;
+		EXT2_JUNLOCK(jrnp);
+		return (ext2_journal_commit_trans(jrnp));
 	}
-	mtx_unlock(&jrnp->jrn_lock);
+	EXT2_JUNLOCK(jrnp);
 	return (0);
-}
-
-/*
- * Stop new transactions from starting.
- */
-void
-ext2_journal_block_new_tran(struct ext2fs_journal *jrnp) {
-	mtx_lock(&jrnp->jrn_lock);
-	jrnp->jrn_block_new_trans = true;
-	mtx_unlock(&jrnp->jrn_lock);
 }
 
 static inline int
@@ -1871,7 +1805,7 @@ ext2_journal_revoke_block(struct ext2fs_journal *jrnp, uint32_t blocknu)
 	struct ext2fs_journal_revoke_entry *entry;
 	int error = 0;
 
-	if (jrnp == NULL) {
+	if (!EXT2_JPRESENT(jrnp)) {
 		return (0);
 	}
 	EXT2_JLOCK(jrnp);
@@ -2028,7 +1962,6 @@ ext2_journal_del_orphan(struct vnode *vp)
 
 	prev_ip = TAILQ_PREV(cur_ip, orphan_list_head, i_orphan_list);
 	next_ip = TAILQ_NEXT(cur_ip, i_orphan_list);
-	if (prev_ip) {
 	if (prev_ip != NULL) {
 		prev_ip->i_dtime = (next_ip) ? next_ip->i_number : 0;
 	} else {

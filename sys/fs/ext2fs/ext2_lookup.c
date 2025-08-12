@@ -1143,8 +1143,7 @@ ext2_dirremove(struct vnode *dvp, struct componentname *cnp)
 		if (error) {
 		}
 		error = ext2_update(dvp, 1);
-		if (error) {
-		}
+		return (error);
 	} else if (DOINGASYNC(dvp) && dp->i_count != 0) {
 		bdwrite(bp);
 	} else {
