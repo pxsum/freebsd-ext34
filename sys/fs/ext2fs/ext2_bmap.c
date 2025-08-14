@@ -156,13 +156,15 @@ readindir(struct vnode *vp, e2fs_lbn_t lbn, e2fs_daddr_t daddr, struct buf **bpp
 {
 	struct buf *bp;
 	struct mount *mp;
+	struct m_ext2fs *fs;
 	struct ext2mount *ump;
 	int error;
 
 	mp = vp->v_mount;
 	ump = VFSTOEXT2(mp);
+	fs = ump->um_e2fs;
 
-	bp = getblk(vp, lbn, mp->mnt_stat.f_iosize, 0, 0, 0);
+	bp = getblk(vp, lbn, fs->e2fs_bsize, 0, 0, 0);
 	if ((bp->b_flags & B_CACHE) == 0) {
 		KASSERT(daddr != 0,
 		    ("readindir: indirect block not in cache"));
@@ -189,6 +191,10 @@ readindir(struct vnode *vp, e2fs_lbn_t lbn, e2fs_daddr_t daddr, struct buf **bpp
 		}
 	}
 	*bpp = bp;
+
+	printf("==== readindir():inumber=%lx,buf=%p,bcache=%d,lbn=%lx,daddr=%x,f_iosize=%lx,bsize=%x\n",
+	    (uint64_t)0, bp, bp->b_flags & B_CACHE, lbn, daddr, mp->mnt_stat.f_iosize, fs->e2fs_bsize);
+
 	return (0);
 }
 
