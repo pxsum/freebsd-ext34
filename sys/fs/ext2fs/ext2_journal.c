@@ -1887,7 +1887,10 @@ static bool ext2_journal_is_block_revoked(struct ext2fs_journal_revoke_table *ta
 	return (false);
 }
 
-// TODO lock orphan functions
+/*
+ * Use the mount lock for orphan functions since
+ * the fs superblock needs to be changed.
+ */
 int
 ext2_journal_in_orphan_list(struct vnode *vp)
 {
@@ -1896,13 +1899,14 @@ ext2_journal_in_orphan_list(struct vnode *vp)
 	struct inode *orphan_iter;
 	int found = 0;
 
+	EXT2_LOCK(ump);
 	TAILQ_FOREACH(orphan_iter, &ump->um_orphan_list, i_orphan_list) {
 		if (orphan_iter == ip) {
 			found = 1;
 			break;
 		}
 	}
-
+	EXT2_UNLOCK(ump);
 	return (found);
 }
 
@@ -1923,7 +1927,7 @@ ext2_journal_add_orphan(struct vnode *vp)
 	uint32_t old_head_inum;
 	int error;
 
-	/* TODO need to lock. */
+	EXT2_LOCK(ump);
 	old_head_inum = fs->e2fs->e3fs_last_orphan;
 	ip->i_dtime = old_head_inum;
 	ip->i_flag |= IN_CHANGE;
@@ -1937,7 +1941,7 @@ ext2_journal_add_orphan(struct vnode *vp)
 	if (error)
 		EXT2_JERROR("sb update on orphan\n");
 	TAILQ_INSERT_HEAD(&ump->um_orphan_list, ip, i_orphan_list);
-
+	EXT2_UNLOCK(ump);
 	return (error);
 }
 
@@ -1960,6 +1964,7 @@ ext2_journal_del_orphan(struct vnode *vp)
 	bool updatesb = false;
 	int error = 0;
 
+	EXT2_LOCK(ump);
 	prev_ip = TAILQ_PREV(cur_ip, orphan_list_head, i_orphan_list);
 	next_ip = TAILQ_NEXT(cur_ip, i_orphan_list);
 	if (prev_ip != NULL) {
@@ -1988,6 +1993,7 @@ ext2_journal_del_orphan(struct vnode *vp)
 
 	TAILQ_REMOVE(&ump->um_orphan_list, cur_ip, i_orphan_list);
 	EXT2_JPRINTF("orphan inode removed: %u", (uint32_t) cur_ip->i_number);
+	EXT2_UNLOCK(ump);
 	return (error);
 }
 
@@ -2008,6 +2014,10 @@ ext2_recover_orphan_list(struct ext2fs_journal *jrnp)
 		return (0);
 	}
 
+	/*
+	 * FIXME: after truncate each inode, I should update the
+	 * superblock's orphan pointer.
+	 */
 	while (inum != 0) {
 		EXT2_JPRINTF("Recovering orphan inode %u.\n", inum);
 		/* Get the vnode for the inode number. */
