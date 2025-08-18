@@ -900,20 +900,18 @@ ext2_journal_dirty_data(struct ext2fs_journal *jrnp, struct buf *bp)
 
 	/* Check if buffer is already journaled in this trans. */
 	jbuf = (struct ext2fs_journal_buf *) bp->b_fsprivate1;
-	if (jbuf != NULL && jbuf->jb_owning_trans == trans) {
+	if (jbuf != NULL) {
+		/*
+		 * If writing data to revoked block this transaction,
+		 * cancel revoke.
+		* */
 		if (jbuf->jb_revoke_entry != NULL)
 			ext2_journal_cancel_revoke(trans, jbuf);
-		EXT2_JUNLOCK(jrnp);
-		bqrelse(bp);
-		return(0);
+		jbuf->jb_buf = NULL;
+		bp->b_fsprivate1 = NULL;
+		ext2_journal_buf_free(jbuf);
 	}
-
-	EXT2_JUNLOCK(jrnp);
-	jbuf = ext2_journal_buf_alloc(jrnp, bp, EXT2_JBUF_DATA);
-	EXT2_JLOCK(jrnp);
-	TAILQ_INSERT_TAIL(&trans->jt_data_buffers, jbuf, jb_list);
 	trans->jt_data_count++;
-
 	EXT2_JUNLOCK(jrnp);
 	EXT2_JTRACE_EXIT(0);
 	return (0);

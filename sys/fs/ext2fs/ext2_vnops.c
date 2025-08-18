@@ -2543,18 +2543,14 @@ ext2_write(struct vop_write_args *ap)
 			} else {
 				error = ext2_journal_dirty_data(jrnp, bp);
 				if (error) {
-					brelse(bp);
+					ext2_update(vp, 1);
 					ext2_journal_stop(jrnp);
 					break;
 				}
-				error = bwrite(bp);
-				if (!error) {
-					ext2_update(vp, 1);
-				}
+				bwrite(bp);
+				ext2_update(vp, 1);
+				EXT2_JPRINTF("calling jstop after\n");
 				ext2_journal_stop(jrnp);
-				if (error) {
-					break;
-				}
 			}
 		/*
 		 * If IO_SYNC each buffer is written synchronously.  Otherwise
