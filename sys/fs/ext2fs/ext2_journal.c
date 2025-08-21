@@ -853,7 +853,6 @@ ext2_journal_transaction_alloc(struct ext2fs_journal *journal)
 	trans->jt_data_count = 0;
 	trans->jt_metadata_count = 0;
 
-	TAILQ_INIT(&trans->jt_data_buffers);
 	TAILQ_INIT(&trans->jt_metadata_buffers);
 	TAILQ_INIT(&trans->jt_revoke_list);
 
@@ -872,7 +871,6 @@ ext2_journal_transaction_free(struct ext2fs_journal_transaction *trans)
 	if (trans == NULL)
 		return;
 	/* Free all journal buffer descriptors */
-	ext2_journal_buf_free_list(&trans->jt_data_buffers);
 	ext2_journal_buf_free_list(&trans->jt_metadata_buffers);
 	ext2_journal_revoke_list_clear(&trans->jt_revoke_list);
 

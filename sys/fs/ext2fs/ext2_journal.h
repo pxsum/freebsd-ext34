@@ -221,7 +221,6 @@ struct ext2fs_journal_transaction {
 	int jt_blocks_reserved;
 
 	/* Buffer lists for ordered journaling */
-	struct ext2_journal_buf_list jt_data_buffers;
 	struct ext2_journal_buf_list jt_metadata_buffers;
 
 	struct ext2fs_journal_revoke_list jt_revoke_list;

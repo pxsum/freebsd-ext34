@@ -157,7 +157,6 @@
     if (trans) { \
         printf("\n=== TRANSACTION BUFFERS ===\n"); \
         printf("Transaction: %p\n", (trans)); \
-        EXT2_JPRINT_BUFLIST(&(trans)->jt_data_buffers, "DATA"); \
         EXT2_JPRINT_BUFLIST(&(trans)->jt_metadata_buffers, "METADATA"); \
         printf("============================\n\n"); \
     } else { \
