@@ -927,7 +927,6 @@ ext2_journal_dirty_metadata(struct ext2fs_journal *jrnp, struct buf *bp)
 {
 	struct ext2fs_journal_transaction *trans;
 	struct ext2fs_journal_buf *jbuf;
-	static int id = 0;
 
 	EXT2_JTRACE_ENTER();
 
@@ -997,8 +996,6 @@ ext2_journal_dirty_metadata(struct ext2fs_journal *jrnp, struct buf *bp)
 	EXT2_JUNLOCK(jrnp);
 	jbuf = ext2_journal_buf_alloc(jrnp, bp, EXT2_JBUF_METADATA);
 	EXT2_JLOCK(jrnp);
-	jbuf->jb_id = id;
-	id++;
 
 	EXT2_JPRINTF("new jbuf created\n");
 

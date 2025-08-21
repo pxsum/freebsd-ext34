@@ -201,7 +201,6 @@ struct ext2fs_journal_buf {
 	struct buf *jb_buf;
 	enum ext2fs_journal_buf_type jb_type;
 	uint32_t jb_blocknr;
-	int jb_id; /* for debugging */
 
 	/* Revoke state tracking */
 	bool jb_revoked;
