@@ -842,7 +842,7 @@ ext2_journal_transaction_alloc(struct ext2fs_journal *journal)
 	EXT2_JTRACE_ENTER();
 
 	trans = malloc(sizeof(struct ext2fs_journal_transaction), M_EXT2JTRANS,
-	    M_ZERO);
+	    M_NOWAIT | M_ZERO);
 
 	trans->jt_journal = journal;
 	trans->jt_state = EXT2_TRANS_RUNNING;
@@ -1034,32 +1034,41 @@ ext2_journal_start(struct ext2fs_journal *jrnp, int nblocks)
 	required_blocks = nblocks + 2;
 
 	EXT2_JTRACE_ENTER();
-retry:
 	EXT2_JLOCK(jrnp);
-	trans = jrnp->jrn_active_trans;
+	for (;;) {
+		trans = jrnp->jrn_active_trans;
 
-	/* Another file op is active. */
-	while ((trans && trans->jt_refcount > 0)) {
-		cv_wait(&jrnp->jrn_trans_start_cv, &jrnp->jrn_lock);
-		goto retry;
-	}
-	/* A transaction is commiting, wait. */
-	while (jrnp->jrn_committing_trans != NULL) {
-		cv_wait(&jrnp->jrn_trans_commit_cv, &jrnp->jrn_lock);
-		goto retry;
-	}
-	/* Checkpoint to free up space and start a new transaction. */
-	if (required_blocks > jrnp->jrn_free_blocks) {
-		if (trans != NULL) {
-			jrnp->jrn_committing_trans = trans;
-			jrnp->jrn_active_trans = NULL;
+		/* Another file op is active. */
+		if (trans && trans->jt_refcount > 0) {
+			cv_wait(&jrnp->jrn_trans_start_cv, &jrnp->jrn_lock);
+			continue;
 		}
 
-		EXT2_JUNLOCK(jrnp);
-		if (jrnp->jrn_committing_trans)
-			ext2_journal_commit_trans(jrnp);
-		ext2_journal_checkpoint_trans(jrnp);
-		goto retry;
+		/* A transaction is commiting, wait. */
+		if (jrnp->jrn_committing_trans != NULL) {
+			cv_wait(&jrnp->jrn_trans_commit_cv, &jrnp->jrn_lock);
+			continue;
+		}
+
+		/* Checkpoint to free up space and start a new transaction. */
+		if (required_blocks > jrnp->jrn_free_blocks) {
+			KASSERT(!TAILQ_EMPTY(&jrnp->jrn_checkpoint_list),
+			    ("need space, but nothing to free"));
+
+			if (trans != NULL) {
+				jrnp->jrn_committing_trans = trans;
+				jrnp->jrn_active_trans = NULL;
+			}
+
+			EXT2_JUNLOCK(jrnp);
+			if (jrnp->jrn_committing_trans)
+				ext2_journal_commit_trans(jrnp);
+			ext2_journal_checkpoint_trans(jrnp);
+			EXT2_JLOCK(jrnp);
+
+			continue;
+		}
+		break;
 	}
 
 	if (trans != NULL) {
@@ -1281,7 +1290,7 @@ ext2_journal_checkpoint_metadata(struct ext2fs_journal *jrnp,
 	EXT2_JTRACE_ENTER();
 	TAILQ_FOREACH(jbuf, &trans->jt_metadata_buffers, jb_list) {
 		bp = jbuf->jb_buf;
-		error = BUF_LOCK(bp, LK_EXCLUSIVE | LK_NOWAIT, NULL);
+		error = BUF_LOCK(bp, LK_EXCLUSIVE, NULL);
 		if (error) {
 			EXT2_JERROR(
 			    "failed to lock the buf before brelse: %d\n",
