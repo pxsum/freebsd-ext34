@@ -274,7 +274,7 @@ ext2_balloc(struct inode *ip, e2fs_lbn_t lbn, int size, struct ucred *cred,
 		 * delayed write.
 		 */
 		if (EXT2_JACTIVE(jrnp)) {
-			error = ext2_journal_dirty_metadata(jrnp, nbp);
+			error = ext2_journal_dirty_metadata(jrnp, bp);
 			if (error) {
 			}
 		} else if (flags & IO_SYNC) {
