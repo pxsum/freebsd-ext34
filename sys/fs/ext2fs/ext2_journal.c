@@ -621,7 +621,7 @@ fail:
 /*
  * Initialize the in-memory journal structure.
  *
- * Populate the ext2fs_journal structurre with useful parameters from the
+ * Populate the ext2fs_journal structure with useful parameters from the
  * on-disk journal superblock and filesystem state.
  */
 static int
