@@ -332,8 +332,6 @@ ext2_ind_truncate(struct vnode *vp, off_t length, int flags, struct ucred *cred,
 		error = ext2_journal_stop(jrnp);
 		return (error);
 	}
-	KASSERT(ext2_journal_in_orphan_list(vp),
-	    ("ext2_ind_truncate: inode not in orphan list"));
 	/*
 	 * Shorten the size of the file. If the file is not being
 	 * truncated to a block boundary, the contents of the
