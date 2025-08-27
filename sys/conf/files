@@ -3749,6 +3749,7 @@ fs/ext2fs/ext2_lookup.c		optional ext2fs
 fs/ext2fs/ext2_subr.c		optional ext2fs
 fs/ext2fs/ext2_vfsops.c		optional ext2fs
 fs/ext2fs/ext2_vnops.c		optional ext2fs
+fs/ext2fs/ext2_journal.c	optional ext2fs
 #
 isa/isa_if.m			standard
 isa/isa_common.c		optional isa
