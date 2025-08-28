@@ -206,7 +206,7 @@ ext2_journal_block_type(void *data)
  * I believe the sizes are:
  *
  * 8-bytes for 32-bit journal with same UUID.
- * 12-bytes for 64-bit journal wit same UUID.
+ * 12-bytes for 64-bit journal with same UUID.
  * 24-bytes for 32-bit with same UUID.
  * 28-bytes for 64-bit journal when same UUID is not set.
  *
