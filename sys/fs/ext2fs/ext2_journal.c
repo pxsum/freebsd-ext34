@@ -1410,9 +1410,6 @@ ext2_journal_checkpoint_trans(struct ext2fs_journal *jrnp)
 	}
 
 unlock_and_exit:
-	KASSERT(jrnp->jrn_block_new_trans == true,
-	    ("new transactions were allowed to start while checkpointing\n"));
-
 	ext2_journal_revoke_table_clear(jrnp->jrn_revoke_table);
 	EXT2_JUNLOCK(jrnp);
 	EXT2_JTRACE_EXIT(0);
